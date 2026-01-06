@@ -1,0 +1,2065 @@
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import io from "socket.io-client";
+import axios from "axios";
+import {
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  PieChart,
+  Pie,
+  Cell,
+  Legend,
+} from "recharts";
+import {
+  Activity,
+  AlertTriangle,
+  CheckCircle,
+  Shield,
+  LayoutDashboard,
+  FileText,
+  Settings,
+  Bell,
+  LogOut,
+  TrendingUp,
+  IndianRupee,
+  AlertOctagon,
+  RefreshCw,
+  Globe,
+  Smartphone,
+  Server,
+  CreditCard,
+  X,
+  Volume2,
+  VolumeX,
+  Zap,
+  Eye,
+  Play,
+  Pause,
+  Gauge,
+  Wifi,
+  WifiOff,
+  Database,
+  Clock,
+  ArrowUpRight,
+  ArrowDownRight,
+  BarChart3,
+  Target,
+  Cpu,
+  HardDrive,
+} from "lucide-react";
+import "./App.css";
+
+const SOCKET_URL = "http://localhost:5000";
+
+// Create socket with reconnection options
+const createSocket = () => {
+  return io(SOCKET_URL, {
+    reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    timeout: 20000,
+    transports: ["websocket", "polling"],
+  });
+};
+
+let socket = createSocket();
+
+// Sound alert for critical issues
+const playAlertSound = () => {
+  const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  const oscillator = audioContext.createOscillator();
+  const gainNode = audioContext.createGain();
+
+  oscillator.connect(gainNode);
+  gainNode.connect(audioContext.destination);
+
+  oscillator.frequency.value = 800;
+  oscillator.type = "sine";
+  gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+  gainNode.gain.exponentialRampToValueAtTime(
+    0.01,
+    audioContext.currentTime + 0.5
+  );
+
+  oscillator.start(audioContext.currentTime);
+  oscillator.stop(audioContext.currentTime + 0.5);
+};
+
+// Format amount in Indian Rupees (Lakhs, Crores)
+const formatINR = (amount) => {
+  if (!amount && amount !== 0) return "₹0";
+  const num = parseFloat(amount);
+  if (num >= 10000000) {
+    return `₹${(num / 10000000).toFixed(2)} Cr`;
+  } else if (num >= 100000) {
+    return `₹${(num / 100000).toFixed(2)} L`;
+  } else {
+    return `₹${num.toLocaleString("en-IN", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
+  }
+};
+
+// Mismatch type colors for pie chart
+const MISMATCH_COLORS = {
+  AMOUNT_MISMATCH: "#ef4444",
+  STATUS_MISMATCH: "#f59e0b",
+  MISSING_CBS: "#8b5cf6",
+  MISSING_MOBILE: "#06b6d4",
+  TIMESTAMP_DRIFT: "#10b981",
+  FRAUD: "#dc2626",
+  GHOST: "#6366f1",
+  UNKNOWN: "#64748b",
+};
+
+// Transaction Detail Modal Component
+const TransactionModal = ({ txId, token, onClose }) => {
+  const [txData, setTxData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchTransaction = async () => {
+      try {
+        const res = await axios.get(`${SOCKET_URL}/api/transaction/${txId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        setTxData(res.data);
+      } catch (err) {
+        console.error("Failed to fetch transaction details");
+      }
+      setLoading(false);
+    };
+    fetchTransaction();
+  }, [txId, token]);
+
+  if (loading) {
+    return (
+      <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+        <div className="bg-slate-800 p-8 rounded-xl">
+          <RefreshCw className="animate-spin text-blue-400 w-8 h-8" />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div className="bg-slate-900 rounded-2xl border border-slate-700 w-full max-w-4xl max-h-[90vh] overflow-auto">
+        <div className="p-6 border-b border-slate-700 flex justify-between items-center sticky top-0 bg-slate-900">
+          <h2 className="text-xl font-bold text-white flex items-center gap-2">
+            <Eye className="text-blue-400" /> Transaction Deep Dive
+          </h2>
+          <button
+            onClick={onClose}
+            className="p-2 hover:bg-slate-800 rounded-lg transition-colors"
+          >
+            <X className="text-slate-400" />
+          </button>
+        </div>
+
+        <div className="p-6 space-y-6">
+          {/* Transaction Header */}
+          <div className="flex flex-wrap gap-4 items-center">
+            <div className="px-4 py-2 bg-slate-800 rounded-lg">
+              <span className="text-slate-400 text-xs">Transaction ID</span>
+              <p className="text-white font-mono text-sm">{txData?.tx_id}</p>
+            </div>
+            <div
+              className={`px-4 py-2 rounded-lg ${
+                txData?.status === "MATCHED"
+                  ? "bg-emerald-500/20 text-emerald-400"
+                  : txData?.status?.includes("RESOLVED")
+                  ? "bg-blue-500/20 text-blue-400"
+                  : "bg-red-500/20 text-red-400"
+              }`}
+            >
+              <span className="text-xs opacity-70">Status</span>
+              <p className="font-semibold">{txData?.status}</p>
+            </div>
+            {txData?.mismatch_type && (
+              <div className="px-4 py-2 bg-amber-500/20 rounded-lg">
+                <span className="text-amber-400 text-xs">Mismatch Type</span>
+                <p className="text-amber-300 font-semibold">
+                  {txData.mismatch_type}
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* 3-Way Comparison */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Payment Gateway */}
+            <div
+              className={`p-4 rounded-xl border ${
+                txData?.sources?.payment_gateway
+                  ? "bg-blue-500/10 border-blue-500/30"
+                  : "bg-slate-800 border-slate-700"
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-4">
+                <CreditCard className="text-blue-400" />
+                <span className="font-semibold text-white">
+                  Payment Gateway
+                </span>
+              </div>
+              {txData?.sources?.payment_gateway ? (
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Amount</span>
+                    <span className="text-white font-mono">
+                      ${txData.sources.payment_gateway.amount}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Status</span>
+                    <span className="text-white">
+                      {txData.sources.payment_gateway.status}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Currency</span>
+                    <span className="text-white">
+                      {txData.sources.payment_gateway.currency}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Channel</span>
+                    <span className="text-white">
+                      {txData.sources.payment_gateway.channel}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-red-400 text-sm">
+                  ❌ Missing from this source
+                </p>
+              )}
+            </div>
+
+            {/* Core Banking */}
+            <div
+              className={`p-4 rounded-xl border ${
+                txData?.sources?.core_banking
+                  ? "bg-purple-500/10 border-purple-500/30"
+                  : "bg-slate-800 border-slate-700"
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-4">
+                <Server className="text-purple-400" />
+                <span className="font-semibold text-white">Core Banking</span>
+              </div>
+              {txData?.sources?.core_banking ? (
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Amount</span>
+                    <span className="text-white font-mono">
+                      ${txData.sources.core_banking.amount}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Status</span>
+                    <span className="text-white">
+                      {txData.sources.core_banking.status}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Currency</span>
+                    <span className="text-white">
+                      {txData.sources.core_banking.currency}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Channel</span>
+                    <span className="text-white">
+                      {txData.sources.core_banking.channel}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-red-400 text-sm">
+                  ❌ Missing from this source
+                </p>
+              )}
+            </div>
+
+            {/* Mobile Banking */}
+            <div
+              className={`p-4 rounded-xl border ${
+                txData?.sources?.mobile_banking
+                  ? "bg-cyan-500/10 border-cyan-500/30"
+                  : "bg-slate-800 border-slate-700"
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-4">
+                <Smartphone className="text-cyan-400" />
+                <span className="font-semibold text-white">Mobile Banking</span>
+              </div>
+              {txData?.sources?.mobile_banking ? (
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Amount</span>
+                    <span className="text-white font-mono">
+                      ${txData.sources.mobile_banking.amount}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Status</span>
+                    <span className="text-white">
+                      {txData.sources.mobile_banking.status}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Currency</span>
+                    <span className="text-white">
+                      {txData.sources.mobile_banking.currency}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Channel</span>
+                    <span className="text-white">
+                      {txData.sources.mobile_banking.channel}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-red-400 text-sm">
+                  ❌ Missing from this source
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Discrepancies */}
+          {txData?.discrepancies?.length > 0 && (
+            <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4">
+              <h3 className="text-red-400 font-semibold mb-3 flex items-center gap-2">
+                <AlertTriangle size={18} /> Detected Discrepancies
+              </h3>
+              <div className="space-y-2">
+                {txData.discrepancies.map((d, i) => (
+                  <div key={i} className="flex items-center gap-4 text-sm">
+                    <span
+                      className={`px-2 py-1 rounded text-xs ${
+                        d.severity === "high"
+                          ? "bg-red-500/20 text-red-400"
+                          : d.severity === "medium"
+                          ? "bg-amber-500/20 text-amber-400"
+                          : "bg-blue-500/20 text-blue-400"
+                      }`}
+                    >
+                      {d.severity.toUpperCase()}
+                    </span>
+                    <span className="text-slate-400">{d.field}:</span>
+                    <span className="text-white font-mono">
+                      {Object.entries(d.values)
+                        .map(([k, v]) => `${k}=${v}`)
+                        .join(" | ")}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Login removed: UI now renders dashboard without a login gate
+
+// Connection Status Banner Component
+const ConnectionBanner = ({
+  socketConnected,
+  kafkaConnected,
+  backendHealth,
+}) => {
+  if (socketConnected && kafkaConnected) return null;
+
+  let message = "";
+  let className = "connection-banner ";
+
+  if (!socketConnected) {
+    message = "⚡ Reconnecting to server...";
+    className += "disconnected";
+  } else if (!kafkaConnected) {
+    message = "🔄 Waiting for Kafka connection...";
+    className += "connecting";
+  }
+
+  return (
+    <div className={className}>
+      <div className="flex items-center justify-center gap-2">
+        <RefreshCw className="animate-spin" size={16} />
+        <span>{message}</span>
+      </div>
+    </div>
+  );
+};
+
+// System Health Widget
+const SystemHealthWidget = ({ health, uptime }) => {
+  return (
+    <div className="glass-card rounded-xl p-4 border border-slate-700/50">
+      <div className="flex items-center justify-between mb-3">
+        <h4 className="text-sm font-semibold text-slate-300 flex items-center gap-2">
+          <Cpu size={16} className="text-cyan-400" />
+          System Status
+        </h4>
+        <span
+          className={`text-xs px-2 py-1 rounded-full font-medium ${
+            health?.status === "healthy"
+              ? "bg-emerald-500/20 text-emerald-400"
+              : "bg-amber-500/20 text-amber-400"
+          }`}
+        >
+          {health?.status?.toUpperCase() || "CHECKING"}
+        </span>
+      </div>
+
+      <div className="space-y-2 text-xs">
+        <div className="flex items-center justify-between">
+          <span className="text-slate-400 flex items-center gap-1">
+            <Database size={12} /> Database
+          </span>
+          <span
+            className={
+              health?.database?.connected ? "text-emerald-400" : "text-red-400"
+            }
+          >
+            {health?.database?.connected ? "● Connected" : "● Disconnected"}
+          </span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-slate-400 flex items-center gap-1">
+            <HardDrive size={12} /> Kafka
+          </span>
+          <span
+            className={
+              health?.kafka?.connected ? "text-emerald-400" : "text-red-400"
+            }
+          >
+            {health?.kafka?.connected ? "● Connected" : "● Disconnected"}
+          </span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-slate-400 flex items-center gap-1">
+            <Clock size={12} /> Uptime
+          </span>
+          <span className="text-slate-300 font-mono">
+            {health?.uptime || "0h 0m"}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const Dashboard = ({ token, logout }) => {
+  const [alerts, setAlerts] = useState([]);
+  const [stats, setStats] = useState({
+    total_processed: 0,
+    total_issues: 0,
+    health_score: 100,
+    tpm: 0,
+    match_rate: 100,
+    avg_resolution_time: 0,
+    total_matched: 0,
+    total_auto_resolved: 0,
+  });
+  const [chartData, setChartData] = useState([]);
+  const [activeTab, setActiveTab] = useState("overview");
+  const [riskAmount, setRiskAmount] = useState(0);
+  const [heatmapData, setHeatmapData] = useState([]);
+  const [geoRiskData, setGeoRiskData] = useState([]);
+  const [mismatchTypes, setMismatchTypes] = useState([]);
+  const [selectedTx, setSelectedTx] = useState(null);
+  const [settings, setSettings] = useState({
+    auto_mitigation: true,
+    risk_threshold: 80,
+    sound_alerts: true,
+  });
+  const [chaosControl, setChaosControl] = useState({
+    running: false,
+    speed: 1.0,
+    chaos_rate: 40,
+  });
+
+  // Connection status tracking
+  const [socketConnected, setSocketConnected] = useState(false);
+  const [kafkaConnected, setKafkaConnected] = useState(false);
+  const [backendHealth, setBackendHealth] = useState(null);
+  const [lastUpdateTime, setLastUpdateTime] = useState(null);
+
+  const alertSoundEnabled = useRef(true);
+  const reconnectAttempts = useRef(0);
+
+  // Fetch chaos producer status (no auth required)
+  const fetchChaosStatus = useCallback(async () => {
+    try {
+      const res = await axios.get(`${SOCKET_URL}/api/chaos/status`);
+      setChaosControl(res.data);
+    } catch (err) {
+      console.error("Failed to fetch chaos status");
+    }
+  }, []);
+
+  // Toggle chaos producer (no auth required)
+  const toggleChaos = async () => {
+    try {
+      const endpoint = chaosControl.running ? "stop" : "start";
+      const res = await axios.post(`${SOCKET_URL}/api/chaos/${endpoint}`);
+      setChaosControl(res.data);
+    } catch (err) {
+      console.error("Failed to toggle chaos");
+    }
+  };
+
+  // Update chaos speed (no auth required)
+  const updateChaosSpeed = async (speed) => {
+    try {
+      const res = await axios.post(`${SOCKET_URL}/api/chaos/speed`, { speed });
+      setChaosControl(res.data);
+    } catch (err) {
+      console.error("Failed to update speed");
+    }
+  };
+
+  // Update chaos rate (no auth required)
+  const updateChaosRate = async (chaos_rate) => {
+    try {
+      const res = await axios.post(`${SOCKET_URL}/api/chaos/speed`, {
+        chaos_rate,
+      });
+      setChaosControl(res.data);
+    } catch (err) {
+      console.error("Failed to update chaos rate");
+    }
+  };
+
+  const fetchStats = useCallback(async () => {
+    try {
+      const res = await axios.get(`${SOCKET_URL}/api/stats`);
+      setStats(res.data);
+
+      const heatRes = await axios.get(`${SOCKET_URL}/api/heatmap`);
+      setHeatmapData(heatRes.data);
+
+      const geoRes = await axios.get(`${SOCKET_URL}/api/geo-risk`);
+      setGeoRiskData(geoRes.data);
+
+      const mismatchRes = await axios.get(`${SOCKET_URL}/api/mismatch-types`);
+      const mismatchArray = Object.entries(mismatchRes.data).map(
+        ([name, value]) => ({
+          name,
+          value,
+        })
+      );
+      setMismatchTypes(mismatchArray);
+    } catch (err) {
+      console.error("Failed to fetch stats:", err.message);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Socket connection handlers
+    socket.on("connect", () => {
+      console.log("✅ Socket connected");
+      setSocketConnected(true);
+      reconnectAttempts.current = 0;
+    });
+
+    socket.on("disconnect", (reason) => {
+      console.log("❌ Socket disconnected:", reason);
+      setSocketConnected(false);
+    });
+
+    socket.on("connect_error", (error) => {
+      console.log("⚠️ Connection error:", error.message);
+      setSocketConnected(false);
+      reconnectAttempts.current += 1;
+    });
+
+    socket.on("reconnect", (attemptNumber) => {
+      console.log("🔄 Reconnected after", attemptNumber, "attempts");
+      setSocketConnected(true);
+    });
+
+    socket.on("system_status", (data) => {
+      console.log("📡 System status update:", data);
+      setKafkaConnected(data.kafka_connected);
+    });
+
+    socket.on("new_alert", (data) => {
+      setAlerts((prev) => {
+        const newAlerts = [data, ...prev];
+        return newAlerts.slice(0, 100);
+      });
+
+      if (data.severity === "error" && data.amount) {
+        setRiskAmount((prev) => prev + data.amount);
+
+        // Play sound alert for critical issues
+        if (
+          data.sound_alert &&
+          alertSoundEnabled.current &&
+          settings.sound_alerts
+        ) {
+          playAlertSound();
+        }
+      }
+
+      setChartData((prev) => {
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString("en-US", {
+          hour12: false,
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+        const newData = [
+          ...prev,
+          {
+            time: timeStr,
+            amount: data.amount,
+            severity:
+              data.severity === "error"
+                ? 100
+                : data.severity === "warning"
+                ? 50
+                : 10,
+          },
+        ];
+        return newData.slice(-30);
+      });
+
+      setLastUpdateTime(new Date());
+    });
+
+    // Fetch initial settings
+    const fetchSettings = async () => {
+      try {
+        const res = await axios.get(`${SOCKET_URL}/api/settings`);
+        setSettings(res.data);
+        alertSoundEnabled.current = res.data.sound_alerts;
+      } catch (err) {
+        console.error("Failed to fetch settings");
+      }
+    };
+
+    // Fetch health status
+    const fetchHealth = async () => {
+      try {
+        const res = await axios.get(`${SOCKET_URL}/api/health`);
+        setBackendHealth(res.data);
+        setKafkaConnected(res.data.kafka?.connected || false);
+      } catch (err) {
+        console.error("Failed to fetch health");
+        setBackendHealth(null);
+      }
+    };
+
+    fetchStats();
+    fetchSettings();
+    fetchChaosStatus();
+    fetchHealth();
+
+    const interval = setInterval(fetchStats, 3000);
+    const chaosInterval = setInterval(fetchChaosStatus, 2000);
+    const healthInterval = setInterval(fetchHealth, 5000);
+
+    return () => {
+      socket.off("connect");
+      socket.off("disconnect");
+      socket.off("connect_error");
+      socket.off("reconnect");
+      socket.off("system_status");
+      socket.off("new_alert");
+      clearInterval(interval);
+      clearInterval(chaosInterval);
+      clearInterval(healthInterval);
+    };
+  }, [fetchStats, fetchChaosStatus, settings.sound_alerts]);
+
+  const downloadReport = async () => {
+    try {
+      const response = await axios.get(`${SOCKET_URL}/api/export`, {
+        headers: { Authorization: `Bearer ${token}` },
+        responseType: "blob",
+      });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", "reconciliation_report.csv");
+      document.body.appendChild(link);
+      link.click();
+    } catch (error) {
+      console.error("Error downloading report:", error);
+    }
+  };
+
+  const handleResolve = async (tx_id, action) => {
+    try {
+      await axios.post(
+        `${SOCKET_URL}/api/resolve`,
+        { tx_id, action },
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+      setAlerts((prev) =>
+        prev.map((a) =>
+          a.id === tx_id
+            ? { ...a, severity: "success", message: "Manually Resolved" }
+            : a
+        )
+      );
+    } catch (err) {
+      console.error("Failed to resolve", err);
+    }
+  };
+
+  const toggleAutoMitigation = async () => {
+    const newSetting = !settings.auto_mitigation;
+    try {
+      await axios.post(`${SOCKET_URL}/api/settings`, {
+        auto_mitigation: newSetting,
+      });
+      setSettings((prev) => ({ ...prev, auto_mitigation: newSetting }));
+    } catch (err) {
+      console.error("Failed to update settings");
+    }
+  };
+
+  const toggleSoundAlerts = async () => {
+    const newSetting = !settings.sound_alerts;
+    try {
+      await axios.post(`${SOCKET_URL}/api/settings`, {
+        sound_alerts: newSetting,
+      });
+      setSettings((prev) => ({ ...prev, sound_alerts: newSetting }));
+      alertSoundEnabled.current = newSetting;
+    } catch (err) {
+      console.error("Failed to update sound settings");
+    }
+  };
+
+  const getSeverityColor = (severity) => {
+    switch (severity) {
+      case "error":
+        return "text-red-400 bg-red-400/10 border-red-400/20";
+      case "warning":
+        return "text-amber-400 bg-amber-400/10 border-amber-400/20";
+      case "success":
+        return "text-emerald-400 bg-emerald-400/10 border-emerald-400/20";
+      default:
+        return "text-slate-400 bg-slate-400/10 border-slate-400/20";
+    }
+  };
+
+  // Helper function to get country flag emoji
+  const getCountryFlag = (countryCode) => {
+    if (!countryCode || countryCode.length !== 2) return "🌍";
+    const codePoints = countryCode
+      .toUpperCase()
+      .split("")
+      .map((char) => 127397 + char.charCodeAt(0));
+    return String.fromCodePoint(...codePoints);
+  };
+
+  return (
+    <div className="flex h-screen bg-slate-950 text-slate-200 font-sans overflow-hidden">
+      {/* Connection Status Banner */}
+      <ConnectionBanner
+        socketConnected={socketConnected}
+        kafkaConnected={kafkaConnected}
+        backendHealth={backendHealth}
+      />
+
+      {/* SIDEBAR */}
+      <aside className="w-72 bg-gradient-to-b from-slate-900 via-slate-900 to-slate-950 border-r border-slate-800/50 flex flex-col z-20">
+        <div className="p-6 flex items-center gap-3 border-b border-slate-800/50">
+          <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-900/30 animate-pulse-glow">
+            <Shield className="text-white w-5 h-5" />
+          </div>
+          <div>
+            <span className="font-bold text-lg tracking-tight text-white">
+              Sentinel
+              <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-400">
+                Core
+              </span>
+            </span>
+            <div className="flex items-center gap-1.5 mt-0.5">
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  socketConnected
+                    ? "bg-emerald-400 animate-pulse"
+                    : "bg-red-400"
+                }`}
+              ></span>
+              <span className="text-[10px] text-slate-500 uppercase tracking-wider">
+                {socketConnected ? "Live" : "Offline"}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <nav className="flex-1 p-4 space-y-1.5">
+          <button
+            onClick={() => setActiveTab("overview")}
+            className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 ${
+              activeTab === "overview"
+                ? "bg-gradient-to-r from-blue-600/20 to-purple-600/20 text-white border border-blue-500/30 shadow-lg shadow-blue-900/20"
+                : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
+            }`}
+          >
+            <LayoutDashboard
+              size={20}
+              className={activeTab === "overview" ? "text-blue-400" : ""}
+            />
+            <span className="font-medium">Overview</span>
+            {activeTab === "overview" && (
+              <div className="ml-auto w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse"></div>
+            )}
+          </button>
+          <button
+            onClick={() => setActiveTab("transactions")}
+            className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 ${
+              activeTab === "transactions"
+                ? "bg-gradient-to-r from-blue-600/20 to-purple-600/20 text-white border border-blue-500/30 shadow-lg shadow-blue-900/20"
+                : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
+            }`}
+          >
+            <FileText
+              size={20}
+              className={activeTab === "transactions" ? "text-blue-400" : ""}
+            />
+            <span className="font-medium">Transactions</span>
+            {stats.total_issues > 0 && (
+              <span className="ml-auto px-2 py-0.5 text-xs font-bold bg-red-500/20 text-red-400 rounded-full border border-red-500/30">
+                {stats.total_issues}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => setActiveTab("settings")}
+            className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 ${
+              activeTab === "settings"
+                ? "bg-gradient-to-r from-blue-600/20 to-purple-600/20 text-white border border-blue-500/30 shadow-lg shadow-blue-900/20"
+                : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
+            }`}
+          >
+            <Settings
+              size={20}
+              className={activeTab === "settings" ? "text-blue-400" : ""}
+            />
+            <span className="font-medium">Settings</span>
+          </button>
+        </nav>
+
+        <div className="p-4 space-y-3 border-t border-slate-800/50">
+          {/* Chaos Producer Quick Control */}
+          <div className="glass-card rounded-xl p-4 border border-slate-700/50">
+            <div className="flex justify-between items-center mb-3">
+              <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                Transaction Generator
+              </span>
+              <span
+                className={`text-xs font-bold flex items-center gap-1.5 px-2 py-1 rounded-full ${
+                  chaosControl.running
+                    ? "text-emerald-400 bg-emerald-500/10 border border-emerald-500/30"
+                    : "text-amber-400 bg-amber-500/10 border border-amber-500/30"
+                }`}
+              >
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    chaosControl.running
+                      ? "bg-emerald-400 animate-pulse"
+                      : "bg-amber-400"
+                  }`}
+                ></span>
+                {chaosControl.running ? "RUNNING" : "PAUSED"}
+              </span>
+            </div>
+            <button
+              onClick={toggleChaos}
+              className={`w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold transition-all duration-200 ${
+                chaosControl.running
+                  ? "bg-gradient-to-r from-red-500/20 to-orange-500/20 text-red-400 hover:from-red-500/30 hover:to-orange-500/30 border border-red-500/40"
+                  : "bg-gradient-to-r from-emerald-500/20 to-teal-500/20 text-emerald-400 hover:from-emerald-500/30 hover:to-teal-500/30 border border-emerald-500/40"
+              }`}
+            >
+              {chaosControl.running ? (
+                <>
+                  <Pause size={16} /> Pause Generator
+                </>
+              ) : (
+                <>
+                  <Play size={16} /> Start Generator
+                </>
+              )}
+            </button>
+            <div className="mt-3 flex justify-between text-[11px] text-slate-500">
+              <span>
+                Speed:{" "}
+                <span className="text-slate-300 font-mono">
+                  {chaosControl.speed}x
+                </span>
+              </span>
+              <span>
+                Chaos:{" "}
+                <span className="text-slate-300 font-mono">
+                  {chaosControl.chaos_rate}%
+                </span>
+              </span>
+            </div>
+          </div>
+
+          {/* System Health Widget */}
+          <SystemHealthWidget health={backendHealth} />
+
+          <button
+            onClick={logout}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-slate-700/50 text-slate-400 hover:bg-red-900/20 hover:text-red-400 hover:border-red-900/50 transition-all text-sm font-medium"
+          >
+            <LogOut size={16} />
+            <span>Sign Out</span>
+          </button>
+        </div>
+      </aside>
+
+      {/* MAIN CONTENT */}
+      <main className="flex-1 flex flex-col overflow-hidden relative">
+        <div className="absolute top-0 left-0 w-full h-64 bg-gradient-to-b from-slate-900 to-slate-950 -z-10"></div>
+
+        {/* HEADER */}
+        <header className="h-16 border-b border-slate-800/50 flex items-center justify-between px-8 bg-slate-900/30 backdrop-blur-xl z-10">
+          <h2 className="text-xl font-bold text-white flex items-center gap-3">
+            {activeTab === "overview" && (
+              <>
+                <div className="p-2 bg-blue-500/10 rounded-lg">
+                  <Activity className="text-blue-400" size={20} />
+                </div>
+                <span>Live Operations Center</span>
+              </>
+            )}
+            {activeTab === "transactions" && (
+              <>
+                <div className="p-2 bg-blue-500/10 rounded-lg">
+                  <FileText className="text-blue-400" size={20} />
+                </div>
+                <span>Transaction Ledger</span>
+              </>
+            )}
+            {activeTab === "settings" && (
+              <>
+                <div className="p-2 bg-blue-500/10 rounded-lg">
+                  <Settings className="text-blue-400" size={20} />
+                </div>
+                <span>System Configuration</span>
+              </>
+            )}
+          </h2>
+          <div className="flex items-center gap-3">
+            {/* Connection Status */}
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-800/50 rounded-full border border-slate-700/50">
+              {socketConnected ? (
+                <Wifi size={14} className="text-emerald-400" />
+              ) : (
+                <WifiOff size={14} className="text-red-400" />
+              )}
+              <span className="text-xs font-medium text-slate-300">
+                {socketConnected ? "Connected" : "Disconnected"}
+              </span>
+            </div>
+
+            {/* Auto-pilot status */}
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-800/50 rounded-full border border-slate-700/50">
+              <div
+                className={`w-2 h-2 rounded-full ${
+                  settings.auto_mitigation
+                    ? "bg-emerald-400 animate-pulse"
+                    : "bg-amber-400"
+                }`}
+              ></div>
+              <span className="text-xs font-medium text-slate-300">
+                {settings.auto_mitigation ? "Auto-Pilot ON" : "Manual Mode"}
+              </span>
+            </div>
+
+            <button
+              onClick={toggleSoundAlerts}
+              className={`p-2.5 rounded-xl transition-all duration-200 ${
+                settings.sound_alerts
+                  ? "text-emerald-400 bg-emerald-500/10 border border-emerald-500/30"
+                  : "text-slate-500 bg-slate-800/50 border border-slate-700/50"
+              }`}
+              title={
+                settings.sound_alerts
+                  ? "Sound alerts enabled"
+                  : "Sound alerts disabled"
+              }
+            >
+              {settings.sound_alerts ? (
+                <Volume2 size={18} />
+              ) : (
+                <VolumeX size={18} />
+              )}
+            </button>
+
+            <button className="p-2.5 text-slate-400 hover:text-white transition-colors relative bg-slate-800/50 rounded-xl border border-slate-700/50">
+              <Bell size={18} />
+              {alerts.filter((a) => a.severity === "error").length > 0 && (
+                <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full border-2 border-slate-900 text-[10px] font-bold flex items-center justify-center text-white">
+                  {Math.min(
+                    alerts.filter((a) => a.severity === "error").length,
+                    9
+                  )}
+                </span>
+              )}
+            </button>
+
+            <div className="w-9 h-9 bg-gradient-to-tr from-blue-500 to-purple-600 rounded-xl border-2 border-slate-800 shadow-lg flex items-center justify-center">
+              <span className="text-white font-bold text-sm">A</span>
+            </div>
+          </div>
+        </header>
+
+        {/* SCROLLABLE CONTENT AREA */}
+        <div className="flex-1 overflow-y-auto p-8 scroll-smooth">
+          {/* OVERVIEW TAB */}
+          {activeTab === "overview" && (
+            <>
+              {/* KPI CARDS */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                <div className="glass-card p-6 rounded-2xl border border-slate-700/50 shadow-xl card-hover group">
+                  <div className="flex justify-between items-start mb-4">
+                    <div className="p-3 bg-gradient-to-br from-blue-500/20 to-cyan-500/10 rounded-xl group-hover:scale-110 transition-transform duration-300">
+                      <TrendingUp className="text-blue-400 w-6 h-6" />
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <ArrowUpRight size={14} className="text-emerald-400" />
+                      <span className="text-xs font-bold text-emerald-400 bg-emerald-900/30 px-2 py-1 rounded-lg">
+                        {stats.match_rate}% Match
+                      </span>
+                    </div>
+                  </div>
+                  <h3 className="text-slate-400 text-sm font-medium mb-1">
+                    Total Processed
+                  </h3>
+                  <p className="text-4xl font-bold text-white mb-2 tracking-tight">
+                    {stats.total_processed.toLocaleString()}
+                  </p>
+                  <div className="flex items-center gap-2 text-xs text-slate-500">
+                    <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 rounded-md">
+                      {stats.total_matched} matched
+                    </span>
+                    <span className="px-2 py-0.5 bg-blue-500/10 text-blue-400 rounded-md">
+                      {stats.total_auto_resolved} auto-fixed
+                    </span>
+                  </div>
+                </div>
+
+                <div className="glass-card p-6 rounded-2xl border border-slate-700/50 shadow-xl card-hover group">
+                  <div className="flex justify-between items-start mb-4">
+                    <div className="p-3 bg-gradient-to-br from-red-500/20 to-orange-500/10 rounded-xl group-hover:scale-110 transition-transform duration-300">
+                      <AlertOctagon className="text-red-400 w-6 h-6" />
+                    </div>
+                    <span className="text-xs font-mono text-slate-400 bg-slate-800 px-2 py-1 rounded-lg border border-slate-700">
+                      Action Req.
+                    </span>
+                  </div>
+                  <h3 className="text-slate-400 text-sm font-medium mb-1">
+                    Critical Mismatches
+                  </h3>
+                  <p
+                    className={`text-4xl font-bold mb-2 tracking-tight ${
+                      stats.total_issues > 0
+                        ? "text-red-400 neon-text-red"
+                        : "text-white"
+                    }`}
+                  >
+                    {stats.total_issues}
+                  </p>
+                  <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-red-500 to-orange-500 rounded-full transition-all duration-500"
+                      style={{
+                        width: `${Math.min(
+                          (stats.total_issues /
+                            Math.max(stats.total_processed, 1)) *
+                            100 *
+                            10,
+                          100
+                        )}%`,
+                      }}
+                    ></div>
+                  </div>
+                </div>
+
+                <div className="glass-card p-6 rounded-2xl border border-slate-700/50 shadow-xl card-hover group">
+                  <div className="flex justify-between items-start mb-4">
+                    <div className="p-3 bg-gradient-to-br from-emerald-500/20 to-teal-500/10 rounded-xl group-hover:scale-110 transition-transform duration-300">
+                      <Zap className="text-emerald-400 w-6 h-6" />
+                    </div>
+                    <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 px-2 py-1 rounded-lg border border-emerald-500/30 animate-pulse">
+                      LIVE
+                    </span>
+                  </div>
+                  <h3 className="text-slate-400 text-sm font-medium mb-1">
+                    Velocity (TPM)
+                  </h3>
+                  <p className="text-4xl font-bold text-white mb-2 tracking-tight">
+                    {stats.tpm}
+                  </p>
+                  <div className="flex items-center gap-2 text-xs text-slate-500">
+                    <Clock size={12} className="text-slate-400" />
+                    <span>
+                      Avg resolution:{" "}
+                      <span className="text-emerald-400 font-mono">
+                        {stats.avg_resolution_time}s
+                      </span>
+                    </span>
+                  </div>
+                </div>
+
+                <div className="glass-card p-6 rounded-2xl border border-slate-700/50 shadow-xl card-hover group relative overflow-hidden">
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-purple-500/10 to-pink-500/10 rounded-full blur-2xl -translate-y-1/2 translate-x-1/2"></div>
+                  <div className="relative">
+                    <div className="flex justify-between items-start mb-4">
+                      <div className="p-3 bg-gradient-to-br from-purple-500/20 to-pink-500/10 rounded-xl group-hover:scale-110 transition-transform duration-300">
+                        <IndianRupee className="text-purple-400 w-6 h-6" />
+                      </div>
+                      <span className="text-xs font-bold text-red-400 bg-red-500/10 px-2 py-1 rounded-lg border border-red-500/30 flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 bg-red-400 rounded-full animate-pulse"></span>
+                        LIVE RISK
+                      </span>
+                    </div>
+                    <h3 className="text-slate-400 text-sm font-medium mb-1">
+                      Money at Risk
+                    </h3>
+                    <p className="text-4xl font-bold text-white mb-2 tracking-tight">
+                      {formatINR(riskAmount)}
+                    </p>
+                    <div className="flex items-center gap-2 text-xs">
+                      {riskAmount > 0 ? (
+                        <span className="text-red-400 flex items-center gap-1">
+                          <ArrowUpRight size={12} /> Increasing
+                        </span>
+                      ) : (
+                        <span className="text-emerald-400 flex items-center gap-1">
+                          <Target size={12} /> No active risks
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                {/* MAIN CHART SECTION */}
+                <div className="lg:col-span-2 bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg p-6 backdrop-blur-sm flex flex-col">
+                  <div className="flex justify-between items-center mb-6">
+                    <h3 className="font-bold text-lg text-white flex items-center gap-2">
+                      <Activity size={18} className="text-blue-400" />
+                      Transaction Velocity & Anomalies
+                    </h3>
+                    <div className="flex gap-4">
+                      <div className="flex items-center gap-2">
+                        <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
+                        <span className="text-xs text-slate-400">Volume</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="w-2 h-2 bg-red-500 rounded-full"></span>
+                        <span className="text-xs text-slate-400">
+                          Risk Score
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="h-80 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={chartData}>
+                        <defs>
+                          <linearGradient
+                            id="colorAmt"
+                            x1="0"
+                            y1="0"
+                            x2="0"
+                            y2="1"
+                          >
+                            <stop
+                              offset="5%"
+                              stopColor="#3b82f6"
+                              stopOpacity={0.3}
+                            />
+                            <stop
+                              offset="95%"
+                              stopColor="#3b82f6"
+                              stopOpacity={0}
+                            />
+                          </linearGradient>
+                          <linearGradient
+                            id="colorSev"
+                            x1="0"
+                            y1="0"
+                            x2="0"
+                            y2="1"
+                          >
+                            <stop
+                              offset="5%"
+                              stopColor="#ef4444"
+                              stopOpacity={0.3}
+                            />
+                            <stop
+                              offset="95%"
+                              stopColor="#ef4444"
+                              stopOpacity={0}
+                            />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid
+                          strokeDasharray="3 3"
+                          stroke="#1e293b"
+                          vertical={false}
+                        />
+                        <XAxis
+                          dataKey="time"
+                          stroke="#475569"
+                          tick={{ fill: "#64748b", fontSize: 10 }}
+                          tickLine={false}
+                          axisLine={false}
+                          interval="preserveStartEnd"
+                        />
+                        <YAxis
+                          yAxisId="left"
+                          stroke="#475569"
+                          tick={{ fill: "#64748b", fontSize: 10 }}
+                          tickLine={false}
+                          axisLine={false}
+                        />
+                        <YAxis
+                          yAxisId="right"
+                          orientation="right"
+                          stroke="#475569"
+                          tick={{ fill: "#64748b", fontSize: 10 }}
+                          tickLine={false}
+                          axisLine={false}
+                          domain={[0, 100]}
+                        />
+                        <Tooltip
+                          contentStyle={{
+                            backgroundColor: "#0f172a",
+                            border: "1px solid #1e293b",
+                            borderRadius: "8px",
+                            color: "#fff",
+                          }}
+                          itemStyle={{ fontSize: "12px" }}
+                          labelStyle={{
+                            color: "#94a3b8",
+                            marginBottom: "4px",
+                            fontSize: "10px",
+                          }}
+                        />
+                        <Area
+                          yAxisId="left"
+                          type="monotone"
+                          dataKey="amount"
+                          stroke="#3b82f6"
+                          strokeWidth={2}
+                          fillOpacity={1}
+                          fill="url(#colorAmt)"
+                          name="Transaction Amount"
+                          isAnimationActive={false}
+                        />
+                        <Area
+                          yAxisId="right"
+                          type="step"
+                          dataKey="severity"
+                          stroke="#ef4444"
+                          strokeWidth={2}
+                          fillOpacity={1}
+                          fill="url(#colorSev)"
+                          name="Risk Score"
+                          isAnimationActive={false}
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* LIVE FEED SECTION */}
+                <div
+                  className="bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg backdrop-blur-sm flex flex-col"
+                  style={{ height: "450px" }}
+                >
+                  <div className="p-4 border-b border-slate-700/50 flex justify-between items-center flex-shrink-0">
+                    <h3 className="font-bold text-white flex items-center gap-2">
+                      <AlertTriangle size={18} className="text-amber-400" />
+                      Live Incident Feed
+                    </h3>
+                    <span className="text-xs bg-slate-700 text-slate-300 px-2 py-1 rounded-full">
+                      {alerts.length} Events
+                    </span>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar relative">
+                    {alerts.length === 0 ? (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 opacity-50">
+                        <CheckCircle size={48} className="mb-2" />
+                        <p>All Systems Nominal</p>
+                      </div>
+                    ) : (
+                      alerts.map((alert, idx) => (
+                        <div
+                          key={idx}
+                          className={`p-3 rounded-lg border flex items-start gap-3 animate-fade-in ${getSeverityColor(
+                            alert.severity
+                          )}`}
+                        >
+                          <div className="mt-1">
+                            {alert.severity === "error" && (
+                              <AlertOctagon size={16} />
+                            )}
+                            {alert.severity === "warning" && (
+                              <AlertTriangle size={16} />
+                            )}
+                            {alert.severity === "success" && (
+                              <CheckCircle size={16} />
+                            )}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex justify-between items-start">
+                              <p className="font-semibold text-sm truncate">
+                                {alert.message.includes("AUTO-MITIGATED") && (
+                                  <span className="bg-blue-500/20 text-blue-400 text-[10px] px-1.5 py-0.5 rounded border border-blue-500/30 mr-2 uppercase tracking-wider">
+                                    Auto-Fixed
+                                  </span>
+                                )}
+                                {alert.message}
+                              </p>
+                              <span className="text-[10px] opacity-70 whitespace-nowrap ml-2">
+                                {alert.timestamp}
+                              </span>
+                            </div>
+                            {alert.analysis && (
+                              <p className="text-xs mt-1 italic opacity-80 border-l-2 border-current pl-2">
+                                🤖 AI Analysis: {alert.analysis}
+                              </p>
+                            )}
+                            <div className="flex justify-between items-center mt-1">
+                              <p className="text-xs font-mono opacity-80 truncate">
+                                ID: {alert.id}
+                              </p>
+                              <p className="text-xs font-bold opacity-90">
+                                ${alert.amount}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* HEATMAP SECTION */}
+              <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg p-6 backdrop-blur-sm mt-6">
+                <div className="flex justify-between items-center mb-6">
+                  <h3 className="font-bold text-lg text-white flex items-center gap-2">
+                    <AlertOctagon size={18} className="text-red-400" />
+                    Mismatch Heatmap (Day × Hour Matrix)
+                  </h3>
+                  <div className="flex items-center gap-2 text-xs text-slate-400">
+                    <span className="w-3 h-3 bg-slate-700 rounded"></span> Low
+                    <span className="w-3 h-3 bg-amber-500 rounded"></span>{" "}
+                    Medium
+                    <span className="w-3 h-3 bg-red-500 rounded"></span> High
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <div className="min-w-[800px]">
+                    {/* Hour labels */}
+                    <div className="flex mb-2 pl-12">
+                      {Array.from({ length: 24 }, (_, i) => (
+                        <div
+                          key={i}
+                          className="flex-1 text-center text-[10px] text-slate-500"
+                        >
+                          {i}:00
+                        </div>
+                      ))}
+                    </div>
+                    {/* Heatmap grid */}
+                    {heatmapData.length > 0 ? (
+                      heatmapData.map((dayData, dayIdx) => (
+                        <div key={dayIdx} className="flex items-center mb-1">
+                          <div className="w-12 text-xs text-slate-400 font-medium">
+                            {dayData.day}
+                          </div>
+                          <div className="flex-1 flex gap-0.5">
+                            {Array.from({ length: 24 }, (_, hour) => {
+                              const value = dayData[`h${hour}`] || 0;
+                              const intensity = Math.min(value / 10, 1);
+                              const bgColor =
+                                value === 0
+                                  ? "bg-slate-700/50 border border-slate-600/30"
+                                  : intensity < 0.3
+                                  ? "bg-emerald-500/40 border border-emerald-500/50"
+                                  : intensity < 0.6
+                                  ? "bg-amber-500/60 border border-amber-500/70"
+                                  : "bg-red-500/80 border border-red-500/90";
+                              return (
+                                <div
+                                  key={hour}
+                                  className={`flex-1 h-6 rounded-sm ${bgColor} hover:ring-1 hover:ring-white/50 transition-all cursor-pointer flex items-center justify-center`}
+                                  title={`${dayData.day} ${hour}:00 - ${value} mismatches`}
+                                >
+                                  {value > 0 && (
+                                    <span className="text-[8px] font-bold text-white">
+                                      {value}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-center text-slate-500 py-8">
+                        No mismatch data yet. Start the chaos producer to
+                        generate transactions.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* GEO RISK & MISMATCH TYPES ROW */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+                {/* Geographic Risk */}
+                <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg p-6 backdrop-blur-sm">
+                  <h3 className="font-bold text-lg text-white flex items-center gap-2 mb-4">
+                    <Globe size={18} className="text-cyan-400" />
+                    Geographic Risk Analysis
+                  </h3>
+                  <div className="space-y-3 max-h-64 overflow-y-auto custom-scrollbar">
+                    {geoRiskData.slice(0, 10).map((geo, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center justify-between p-3 bg-slate-900/50 rounded-lg"
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="text-2xl">
+                            {getCountryFlag(geo.country)}
+                          </span>
+                          <div>
+                            <p className="text-white font-medium">
+                              {geo.country}
+                            </p>
+                            <p className="text-xs text-slate-400">
+                              {geo.total} transactions
+                            </p>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <p
+                            className={`font-bold ${
+                              geo.risk_rate > 20
+                                ? "text-red-400"
+                                : geo.risk_rate > 10
+                                ? "text-amber-400"
+                                : "text-emerald-400"
+                            }`}
+                          >
+                            {geo.risk_rate}%
+                          </p>
+                          <p className="text-xs text-slate-500">
+                            {geo.mismatches} issues
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                    {geoRiskData.length === 0 && (
+                      <p className="text-center text-slate-500 py-4">
+                        Collecting geographic data...
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Mismatch Types Breakdown */}
+                <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg p-6 backdrop-blur-sm">
+                  <h3 className="font-bold text-lg text-white flex items-center gap-2 mb-4">
+                    <Activity size={18} className="text-purple-400" />
+                    Mismatch Type Breakdown
+                  </h3>
+                  {mismatchTypes.length > 0 ? (
+                    <div className="h-64">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={mismatchTypes}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={50}
+                            outerRadius={80}
+                            paddingAngle={2}
+                            dataKey="value"
+                          >
+                            {mismatchTypes.map((entry, index) => (
+                              <Cell
+                                key={`cell-${index}`}
+                                fill={MISMATCH_COLORS[entry.name] || "#64748b"}
+                              />
+                            ))}
+                          </Pie>
+                          <Tooltip
+                            contentStyle={{
+                              backgroundColor: "#0f172a",
+                              border: "1px solid #1e293b",
+                              borderRadius: "8px",
+                              color: "#fff",
+                            }}
+                          />
+                          <Legend
+                            formatter={(value) => (
+                              <span className="text-slate-300 text-xs">
+                                {value}
+                              </span>
+                            )}
+                          />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                  ) : (
+                    <div className="h-64 flex items-center justify-center text-slate-500">
+                      <p>Collecting mismatch data...</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* RECENT TRANSACTIONS TABLE */}
+              <div className="mt-8 bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg backdrop-blur-sm overflow-hidden">
+                <div className="p-6 border-b border-slate-700/50 flex justify-between items-center">
+                  <h3 className="font-bold text-lg text-white">
+                    Recent Audit Logs
+                  </h3>
+                  <div className="flex gap-4">
+                    <button
+                      onClick={downloadReport}
+                      className="text-sm text-emerald-400 hover:text-emerald-300 transition-colors flex items-center gap-2"
+                    >
+                      <FileText size={16} /> Download Report
+                    </button>
+                    <button className="text-sm text-blue-400 hover:text-blue-300 transition-colors">
+                      View All History
+                    </button>
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-slate-900/50 text-slate-400 uppercase text-xs font-semibold tracking-wider">
+                      <tr>
+                        <th className="p-4">Status</th>
+                        <th className="p-4">Transaction ID</th>
+                        <th className="p-4">Type</th>
+                        <th className="p-4">Amount</th>
+                        <th className="p-4">Country</th>
+                        <th className="p-4">Timestamp</th>
+                        <th className="p-4 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-700/50">
+                      {alerts.slice(0, 10).map((alert, idx) => (
+                        <tr
+                          key={idx}
+                          className="hover:bg-slate-700/30 transition-colors cursor-pointer"
+                          onClick={() => setSelectedTx(alert.id)}
+                        >
+                          <td className="p-4">
+                            <span
+                              className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${getSeverityColor(
+                                alert.severity
+                              )}`}
+                            >
+                              {alert.severity === "error"
+                                ? "CRITICAL"
+                                : alert.severity === "warning"
+                                ? "WARNING"
+                                : "MATCHED"}
+                            </span>
+                          </td>
+                          <td className="p-4 font-mono text-slate-300">
+                            {alert.id?.slice(0, 8)}...
+                          </td>
+                          <td className="p-4 text-slate-300">
+                            {alert.type || "Transfer"}
+                          </td>
+                          <td className="p-4 font-mono font-medium text-white">
+                            {formatINR(alert.amount)}
+                          </td>
+                          <td className="p-4 text-slate-300">
+                            {getCountryFlag(alert.country)} {alert.country}
+                          </td>
+                          <td className="p-4 text-slate-400">
+                            {alert.timestamp}
+                          </td>
+                          <td className="p-4 text-right">
+                            <button
+                              className="text-slate-400 hover:text-white transition-colors"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedTx(alert.id);
+                              }}
+                            >
+                              <Eye size={16} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                      {alerts.length === 0 && (
+                        <tr>
+                          <td
+                            colSpan="7"
+                            className="p-8 text-center text-slate-500"
+                          >
+                            Waiting for transaction stream...
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Transaction Detail Modal */}
+          {selectedTx && (
+            <TransactionModal
+              txId={selectedTx}
+              token={token}
+              onClose={() => setSelectedTx(null)}
+            />
+          )}
+
+          {/* TRANSACTIONS TAB */}
+          {activeTab === "transactions" && (
+            <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg backdrop-blur-sm overflow-hidden">
+              <div className="p-6 border-b border-slate-700/50 flex justify-between items-center">
+                <h3 className="font-bold text-lg text-white">
+                  Transaction Management
+                </h3>
+                <div className="flex gap-2">
+                  <button className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-lg text-xs font-medium text-slate-300 transition-colors">
+                    Filter: All
+                  </button>
+                  <button className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-lg text-xs font-medium text-red-400 transition-colors">
+                    Errors Only
+                  </button>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-slate-900/50 text-slate-400 uppercase text-xs font-semibold tracking-wider">
+                    <tr>
+                      <th className="p-4">Status</th>
+                      <th className="p-4">ID</th>
+                      <th className="p-4">Details</th>
+                      <th className="p-4">Amount</th>
+                      <th className="p-4">Time</th>
+                      <th className="p-4 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-700/50">
+                    {alerts.map((alert, idx) => (
+                      <tr
+                        key={idx}
+                        className="hover:bg-slate-700/30 transition-colors"
+                      >
+                        <td className="p-4">
+                          <span
+                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${getSeverityColor(
+                              alert.severity
+                            )}`}
+                          >
+                            {alert.severity.toUpperCase()}
+                          </span>
+                        </td>
+                        <td className="p-4 font-mono text-slate-300">
+                          {alert.id}
+                        </td>
+                        <td className="p-4 text-slate-300 max-w-xs truncate">
+                          {alert.message}
+                        </td>
+                        <td className="p-4 font-mono font-medium text-white">
+                          ${alert.amount}
+                        </td>
+                        <td className="p-4 text-slate-400">
+                          {alert.timestamp}
+                        </td>
+                        <td className="p-4 text-right flex justify-end gap-2">
+                          {alert.severity === "error" && (
+                            <>
+                              <button
+                                onClick={() =>
+                                  handleResolve(alert.id, "resolve")
+                                }
+                                className="px-3 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 rounded text-xs transition-colors"
+                              >
+                                Resolve
+                              </button>
+                              <button
+                                onClick={() =>
+                                  handleResolve(alert.id, "ignore")
+                                }
+                                className="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded text-xs transition-colors"
+                              >
+                                Ignore
+                              </button>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* SETTINGS TAB */}
+          {activeTab === "settings" && (
+            <div className="max-w-2xl mx-auto space-y-6">
+              <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg p-6 backdrop-blur-sm">
+                <h3 className="font-bold text-lg text-white mb-4 flex items-center gap-2">
+                  <Shield className="text-blue-400" /> Mitigation Protocols
+                </h3>
+
+                <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-slate-700/50 mb-4">
+                  <div>
+                    <h4 className="font-medium text-white">Auto-Mitigation</h4>
+                    <p className="text-sm text-slate-400">
+                      Automatically attempt to resolve discrepancies using AI
+                      confidence scoring and 3-way consensus.
+                    </p>
+                  </div>
+                  <button
+                    onClick={toggleAutoMitigation}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900 ${
+                      settings.auto_mitigation ? "bg-blue-600" : "bg-slate-700"
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                        settings.auto_mitigation
+                          ? "translate-x-6"
+                          : "translate-x-1"
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-slate-700/50 mb-4">
+                  <div>
+                    <h4 className="font-medium text-white flex items-center gap-2">
+                      {settings.sound_alerts ? (
+                        <Volume2 className="text-emerald-400" />
+                      ) : (
+                        <VolumeX className="text-slate-500" />
+                      )}
+                      Sound Alerts
+                    </h4>
+                    <p className="text-sm text-slate-400">
+                      Play audio notification for critical mismatches to get
+                      immediate attention.
+                    </p>
+                  </div>
+                  <button
+                    onClick={toggleSoundAlerts}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900 ${
+                      settings.sound_alerts ? "bg-emerald-600" : "bg-slate-700"
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                        settings.sound_alerts
+                          ? "translate-x-6"
+                          : "translate-x-1"
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                <div className="p-4 bg-slate-900/50 rounded-lg border border-slate-700/50">
+                  <div className="flex justify-between mb-2">
+                    <h4 className="font-medium text-white">Risk Threshold</h4>
+                    <span className="text-blue-400 font-mono">
+                      {settings.risk_threshold}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={settings.risk_threshold}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        risk_threshold: parseInt(e.target.value),
+                      })
+                    }
+                    className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                  />
+                  <p className="text-sm text-slate-400 mt-2">
+                    Transactions with a risk score above this threshold will
+                    trigger an immediate halt and operator alert.
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg p-6 backdrop-blur-sm">
+                <h3 className="font-bold text-lg text-white mb-4 flex items-center gap-2">
+                  <Zap className="text-amber-400" /> Chaos Producer Control
+                </h3>
+
+                {/* Start/Stop Button */}
+                <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-slate-700/50 mb-4">
+                  <div>
+                    <h4 className="font-medium text-white flex items-center gap-2">
+                      {chaosControl.running ? (
+                        <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></span>
+                      ) : (
+                        <span className="w-2 h-2 bg-slate-500 rounded-full"></span>
+                      )}
+                      Transaction Generator
+                    </h4>
+                    <p className="text-sm text-slate-400">
+                      {chaosControl.running
+                        ? "Generating transactions..."
+                        : "Paused - Click to resume"}
+                    </p>
+                  </div>
+                  <button
+                    onClick={toggleChaos}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all ${
+                      chaosControl.running
+                        ? "bg-red-500/20 text-red-400 hover:bg-red-500/30 border border-red-500/50"
+                        : "bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 border border-emerald-500/50"
+                    }`}
+                  >
+                    {chaosControl.running ? (
+                      <>
+                        <Pause size={18} /> Pause
+                      </>
+                    ) : (
+                      <>
+                        <Play size={18} /> Start
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {/* Speed Control */}
+                <div className="p-4 bg-slate-900/50 rounded-lg border border-slate-700/50 mb-4">
+                  <div className="flex justify-between mb-2">
+                    <h4 className="font-medium text-white flex items-center gap-2">
+                      <Gauge size={16} className="text-blue-400" />
+                      Speed (TPS)
+                    </h4>
+                    <span className="text-blue-400 font-mono">
+                      {chaosControl.speed}x
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="10"
+                    step="0.5"
+                    value={chaosControl.speed}
+                    onChange={(e) =>
+                      updateChaosSpeed(parseFloat(e.target.value))
+                    }
+                    className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                  />
+                  <div className="flex justify-between text-xs text-slate-500 mt-1">
+                    <span>0.5x (Slow)</span>
+                    <span>10x (Fast)</span>
+                  </div>
+                </div>
+
+                {/* Chaos Rate Control */}
+                <div className="p-4 bg-slate-900/50 rounded-lg border border-slate-700/50">
+                  <div className="flex justify-between mb-2">
+                    <h4 className="font-medium text-white flex items-center gap-2">
+                      <AlertTriangle size={16} className="text-amber-400" />
+                      Chaos Rate
+                    </h4>
+                    <span className="text-amber-400 font-mono">
+                      {chaosControl.chaos_rate}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value={chaosControl.chaos_rate}
+                    onChange={(e) => updateChaosRate(parseInt(e.target.value))}
+                    className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-amber-500"
+                  />
+                  <div className="flex justify-between text-xs text-slate-500 mt-1">
+                    <span>0% (All clean)</span>
+                    <span>100% (All errors)</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg p-6 backdrop-blur-sm">
+                <h3 className="font-bold text-lg text-white mb-4 flex items-center gap-2">
+                  <Globe className="text-cyan-400" /> 3-Way Reconciliation
+                  Sources
+                </h3>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-emerald-500/30">
+                    <div className="flex items-center gap-3">
+                      <CreditCard className="text-blue-400" />
+                      <div>
+                        <p className="text-white font-medium">
+                          Payment Gateway
+                        </p>
+                        <p className="text-xs text-slate-400">
+                          Topic: pg-transactions
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-emerald-400 text-sm">
+                      ● Connected
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-emerald-500/30">
+                    <div className="flex items-center gap-3">
+                      <Server className="text-purple-400" />
+                      <div>
+                        <p className="text-white font-medium">
+                          Core Banking System
+                        </p>
+                        <p className="text-xs text-slate-400">
+                          Topic: cbs-transactions
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-emerald-400 text-sm">
+                      ● Connected
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-emerald-500/30">
+                    <div className="flex items-center gap-3">
+                      <Smartphone className="text-cyan-400" />
+                      <div>
+                        <p className="text-white font-medium">
+                          Mobile Banking App
+                        </p>
+                        <p className="text-xs text-slate-400">
+                          Topic: mobile-transactions
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-emerald-400 text-sm">
+                      ● Connected
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg p-6 backdrop-blur-sm">
+                <h3 className="font-bold text-lg text-white mb-4 flex items-center gap-2">
+                  <RefreshCw className="text-amber-400" /> System Maintenance
+                </h3>
+                <div className="space-y-3">
+                  <button className="w-full p-3 bg-slate-900/50 hover:bg-slate-900 border border-slate-700/50 rounded-lg text-left flex items-center justify-between group transition-colors">
+                    <span className="text-slate-300">
+                      Clear Transaction Cache
+                    </span>
+                    <LogOut
+                      size={16}
+                      className="text-slate-500 group-hover:text-white transition-colors"
+                    />
+                  </button>
+                  <button
+                    onClick={downloadReport}
+                    className="w-full p-3 bg-slate-900/50 hover:bg-slate-900 border border-slate-700/50 rounded-lg text-left flex items-center justify-between group transition-colors"
+                  >
+                    <span className="text-slate-300">
+                      Export Reconciliation Report
+                    </span>
+                    <FileText
+                      size={16}
+                      className="text-slate-500 group-hover:text-white transition-colors"
+                    />
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+};
+
+function App() {
+  const [token, setToken] = useState(localStorage.getItem("token"));
+
+  useEffect(() => {
+    const link = document.createElement("link");
+    link.href =
+      "https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css";
+    link.rel = "stylesheet";
+    document.head.appendChild(link);
+
+    // Auto-login in local/dev environment so dashboard can fetch protected endpoints
+    // Uses default credentials from backend for convenience during development.
+    (async function tryAutoLogin() {
+      if (token) return;
+      try {
+        const res = await axios.post(`${SOCKET_URL}/api/login`, {
+          username: "admin",
+          password: "securePass123!",
+        });
+        if (res?.data?.token) {
+          localStorage.setItem("token", res.data.token);
+          setToken(res.data.token);
+          console.log("[Auto-Login] token stored");
+        }
+      } catch (err) {
+        console.warn(
+          "Auto-login failed (backend may be offline):",
+          err.message || err
+        );
+      }
+    })();
+  }, [token]);
+
+  return (
+    <Dashboard
+      token={token}
+      logout={() => {
+        setToken(null);
+        localStorage.removeItem("token");
+      }}
+    />
+  );
+}
+
+export default App;

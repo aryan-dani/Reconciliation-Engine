@@ -1,0 +1,8 @@
+kafka-python
+faker
+requests
+Flask
+Flask-SocketIO
+Flask-Cors
+SQLAlchemy
+PyJWT
