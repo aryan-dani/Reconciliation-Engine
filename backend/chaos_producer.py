@@ -6,31 +6,37 @@ from kafka import KafkaProducer
 from kafka.errors import NoBrokersAvailable, KafkaError
 from faker import Faker
 import logging
+from kafka_config import build_kafka_common_kwargs, load_kafka_settings, validate_event_hubs_kafka_settings
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-KAFKA_SERVER = 'localhost:9092'
-TOPIC_PG = 'pg-transactions'
-TOPIC_CBS = 'cbs-transactions'
-TOPIC_MOBILE = 'mobile-transactions'
+KAFKA_SETTINGS = load_kafka_settings()
+KAFKA_SERVER = KAFKA_SETTINGS.bootstrap_servers
+TOPIC_PG, TOPIC_CBS, TOPIC_MOBILE = KAFKA_SETTINGS.topics
 API_URL = 'http://localhost:5000'
 
 fake = Faker('en_IN')  # Indian locale
 
 def create_kafka_producer(max_retries=10, retry_delay=3):
     """Create Kafka producer with retry logic."""
+
+    validation_error = validate_event_hubs_kafka_settings(KAFKA_SETTINGS)
+    if validation_error:
+        raise RuntimeError(f"Kafka/Event Hubs configuration error: {validation_error}")
+
     for attempt in range(max_retries):
         try:
-            producer = KafkaProducer(
-                bootstrap_servers=KAFKA_SERVER,
-                value_serializer=lambda v: json.dumps(v).encode('utf-8'),
-                retries=5,
-                retry_backoff_ms=1000,
-                request_timeout_ms=30000,
-                max_block_ms=60000
-            )
+            producer_kwargs = {
+                **build_kafka_common_kwargs(KAFKA_SETTINGS),
+                "value_serializer": lambda v: json.dumps(v).encode('utf-8'),
+                "retries": 5,
+                "retry_backoff_ms": 1000,
+                "request_timeout_ms": 30000,
+                "max_block_ms": 60000,
+            }
+            producer = KafkaProducer(**producer_kwargs)
             logger.info(f"✅ Successfully connected to Kafka at {KAFKA_SERVER}")
             return producer
         except NoBrokersAvailable as e:
@@ -119,12 +125,28 @@ def inject_chaos(transaction, chaos_rate=40):
     if random.randint(1, 100) > chaos_rate:
         return pg_data, cbs_data, mobile_data, "✅ CLEAN (3-WAY MATCH)"
     
-    # Choose chaos type
-    chaos_type = random.choices(
-        ['missing_cbs', 'missing_mobile', 'amount_mismatch', 
-         'status_mismatch', 'fraud_attempt', 'timestamp_drift', 'triple_mismatch'],
-        weights=[20, 15, 20, 15, 10, 10, 10]
-    )[0]
+    def _weighted_pick(options_with_weights):
+        total = float(sum(w for _, w in options_with_weights))
+        r = random.random() * total
+        upto = 0.0
+        for option, weight in options_with_weights:
+            upto += float(weight)
+            if r <= upto:
+                return option
+        return options_with_weights[-1][0]
+
+    # Choose chaos type (weighted)
+    chaos_type = _weighted_pick(
+        [
+            ('missing_cbs', 20),
+            ('missing_mobile', 15),
+            ('amount_mismatch', 20),
+            ('status_mismatch', 15),
+            ('fraud_attempt', 10),
+            ('timestamp_drift', 10),
+            ('triple_mismatch', 10),
+        ]
+    )
 
     if chaos_type == 'missing_cbs':
         return pg_data, None, mobile_data, "❌ MISSING IN CBS"

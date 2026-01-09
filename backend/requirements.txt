@@ -6,3 +6,6 @@ Flask-SocketIO
 Flask-Cors
 SQLAlchemy
 PyJWT
+certifi
+python-dotenv
+openai

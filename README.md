@@ -89,6 +89,65 @@ docker-compose up -d
 
 # OR using standalone Docker
 docker run --name kafka-broker -d -p 9092:9092 apache/kafka:4.1.1
+
+---
+
+## ☁️ Phase 1: Run on Azure Event Hubs (Kafka API)
+
+This project can run on **Azure Event Hubs using the Kafka protocol** with minimal code changes (env-only).
+
+### Azure setup (one-time)
+
+1. Create an **Event Hubs namespace** (Standard is fine for MVP).
+2. Enable the **Kafka endpoint**.
+3. Create Event Hubs (or reuse one per topic) for:
+    - `pg-transactions`
+    - `cbs-transactions`
+    - `mobile-transactions`
+
+### Local run (no Docker Kafka required)
+
+Recommended: create a local `backend/.env` file (see `backend/.env.example`) so you don’t have to re-set PowerShell variables every run.
+
+Typical values:
+
+- `KAFKA_BOOTSTRAP_SERVERS=<namespace>.servicebus.windows.net:9093`
+- `KAFKA_SECURITY_PROTOCOL=SASL_SSL`
+- `KAFKA_SASL_MECHANISM=PLAIN`
+- `KAFKA_SASL_USERNAME=$ConnectionString`
+- `KAFKA_SASL_PASSWORD=<Event Hubs connection string>`
+
+Then start the backend services exactly the same way.
+
+---
+
+## 🤖 Phase 2: Enable Azure AI Foundry Explanations (Responses API)
+
+When Azure AI Foundry is configured, the reconciler generates **JSON-schema-validated explanations** for mismatches and missing-counterparty events and attaches them to:
+
+- live WebSocket alerts (`ai` field)
+- `GET /api/transaction/:id` (`ai_insight` field)
+
+### Azure setup (one-time)
+
+1. Create or open your **Azure AI Foundry** project/resource.
+2. Create a **deployment** (this system uses deployment-backed inference, not raw model names).
+3. Copy:
+    - the **Endpoint** (looks like `https://<something>.services.ai.azure.com`)
+    - an **API Key**
+    - the **Deployment name**
+
+### Local configuration
+
+Set these environment variables (or add them to `backend/.env`):
+
+- `AZURE_FOUNDRY_ENDPOINT=https://recon-gpt.services.ai.azure.com`
+- `AZURE_FOUNDRY_API_KEY=<foundry-key>`
+- `AZURE_FOUNDRY_DEPLOYMENT=<deployment-name>`
+
+Optional:
+
+- (no additional AI env vars; the system reads only AZURE_FOUNDRY_ENDPOINT / AZURE_FOUNDRY_API_KEY / AZURE_FOUNDRY_DEPLOYMENT)
 ```
 
 ### 2. Create Kafka Topics
