@@ -50,6 +50,16 @@ import {
   Target,
   Cpu,
   HardDrive,
+  Bot,
+  ShieldCheck,
+  ShieldAlert,
+  Sparkles,
+  ChevronDown,
+  ChevronUp,
+  Brain,
+  Lock,
+  Unlock,
+  Info,
 } from "lucide-react";
 import "./App.css";
 
@@ -118,10 +128,303 @@ const MISMATCH_COLORS = {
   UNKNOWN: "#64748b",
 };
 
+// Content Safety Severity Badge Component
+const ContentSafetyBadge = ({ safety }) => {
+  if (!safety || safety.enabled === false) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium bg-slate-700/50 text-slate-400 border border-slate-600/50">
+        <ShieldAlert size={12} />
+        Safety Disabled
+      </span>
+    );
+  }
+
+  if (!safety.ok) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium bg-amber-500/20 text-amber-400 border border-amber-500/30">
+        <ShieldAlert size={12} />
+        Check Error
+      </span>
+    );
+  }
+
+  if (safety.allowed === false) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium bg-red-500/20 text-red-400 border border-red-500/30 animate-pulse">
+        <Lock size={12} />
+        Blocked (Severity: {safety.max_severity})
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+      <ShieldCheck size={12} />
+      Safe (Max: {safety.max_severity || 0})
+    </span>
+  );
+};
+
+// Content Safety Details Component
+const ContentSafetyDetails = ({ safety }) => {
+  if (!safety || safety.enabled === false) return null;
+
+  const categories = safety.categories || {};
+  const categoryList = Object.entries(categories);
+
+  return (
+    <div className="mt-3 p-3 bg-slate-900/50 rounded-lg border border-slate-700/50">
+      <div className="flex items-center gap-2 mb-2">
+        <Shield size={14} className="text-cyan-400" />
+        <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+          Content Safety Analysis
+        </span>
+      </div>
+      {categoryList.length > 0 ? (
+        <div className="grid grid-cols-2 gap-2">
+          {categoryList.map(([category, severity]) => (
+            <div
+              key={category}
+              className="flex items-center justify-between p-2 bg-slate-800/50 rounded"
+            >
+              <span className="text-xs text-slate-400 capitalize">
+                {category.replace(/_/g, " ")}
+              </span>
+              <span
+                className={`text-xs font-mono font-bold ${
+                  severity >= 4
+                    ? "text-red-400"
+                    : severity >= 2
+                    ? "text-amber-400"
+                    : "text-emerald-400"
+                }`}
+              >
+                {severity}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs text-slate-500">No category data available</p>
+      )}
+    </div>
+  );
+};
+
+// AI Insight Panel Component
+const AIInsightPanel = ({ ai, expanded, onToggle }) => {
+  if (!ai) return null;
+
+  const isError = ai.ok === false;
+  const analysis = ai.analysis || "No analysis available";
+  const contentSafety = ai.content_safety;
+
+  return (
+    <div
+      className={`rounded-xl border transition-all duration-300 ${
+        isError
+          ? "bg-red-500/10 border-red-500/30"
+          : "bg-gradient-to-br from-blue-500/10 to-purple-500/10 border-blue-500/30"
+      }`}
+    >
+      {/* Header */}
+      <button
+        onClick={onToggle}
+        className="w-full p-4 flex items-center justify-between text-left hover:bg-white/5 transition-colors rounded-t-xl"
+      >
+        <div className="flex items-center gap-3">
+          <div
+            className={`p-2 rounded-lg ${
+              isError ? "bg-red-500/20" : "bg-blue-500/20"
+            }`}
+          >
+            <Brain
+              size={20}
+              className={isError ? "text-red-400" : "text-blue-400"}
+            />
+          </div>
+          <div>
+            <h4 className="font-semibold text-white flex items-center gap-2">
+              AI Analysis
+              <Sparkles size={14} className="text-purple-400" />
+            </h4>
+            <p className="text-xs text-slate-400">
+              Powered by Azure AI Foundry
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          {contentSafety && <ContentSafetyBadge safety={contentSafety} />}
+          {expanded ? (
+            <ChevronUp size={20} className="text-slate-400" />
+          ) : (
+            <ChevronDown size={20} className="text-slate-400" />
+          )}
+        </div>
+      </button>
+
+      {/* Expanded Content */}
+      {expanded && (
+        <div className="px-4 pb-4 space-y-4 animate-fade-in">
+          {/* Status Badge */}
+          <div className="flex items-center gap-2">
+            {ai.ok ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                <CheckCircle size={12} />
+                Analysis Complete
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-red-500/20 text-red-400 border border-red-500/30">
+                <AlertOctagon size={12} />
+                {ai.error_code || "Analysis Error"}
+              </span>
+            )}
+            {ai.trace_id && (
+              <span className="text-xs text-slate-500 font-mono">
+                trace: {ai.trace_id.slice(0, 8)}...
+              </span>
+            )}
+          </div>
+
+          {/* Analysis Text */}
+          <div className="p-4 bg-slate-900/70 rounded-lg border border-slate-700/50">
+            <div className="flex items-start gap-3">
+              <Bot size={18} className="text-purple-400 mt-0.5 flex-shrink-0" />
+              <div className="flex-1">
+                <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap">
+                  {analysis}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Structured Data */}
+          {ai.raw && (
+            <div className="space-y-3">
+              {ai.raw.severity && (
+                <div className="flex items-center justify-between p-3 bg-slate-900/50 rounded-lg">
+                  <span className="text-sm text-slate-400">AI Severity</span>
+                  <span
+                    className={`px-2.5 py-1 rounded-full text-xs font-bold uppercase ${
+                      ai.raw.severity === "critical"
+                        ? "bg-red-500/20 text-red-400 border border-red-500/30"
+                        : ai.raw.severity === "high"
+                        ? "bg-orange-500/20 text-orange-400 border border-orange-500/30"
+                        : ai.raw.severity === "medium"
+                        ? "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                        : "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                    }`}
+                  >
+                    {ai.raw.severity}
+                  </span>
+                </div>
+              )}
+
+              {ai.raw.confidence !== undefined && (
+                <div className="p-3 bg-slate-900/50 rounded-lg">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm text-slate-400">
+                      AI Confidence
+                    </span>
+                    <span className="text-sm font-mono text-white">
+                      {Math.round(ai.raw.confidence * 100)}%
+                    </span>
+                  </div>
+                  <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-blue-500 to-purple-500 rounded-full transition-all duration-500"
+                      style={{ width: `${ai.raw.confidence * 100}%` }}
+                    ></div>
+                  </div>
+                </div>
+              )}
+
+              {ai.raw.recommended_action && (
+                <div className="p-3 bg-slate-900/50 rounded-lg">
+                  <span className="text-xs text-slate-500 uppercase tracking-wider">
+                    Recommended Action
+                  </span>
+                  <p className="text-sm text-white mt-1 font-medium">
+                    {ai.raw.recommended_action}
+                  </p>
+                </div>
+              )}
+
+              {ai.raw.root_cause && (
+                <div className="p-3 bg-slate-900/50 rounded-lg">
+                  <span className="text-xs text-slate-500 uppercase tracking-wider">
+                    Root Cause
+                  </span>
+                  <p className="text-sm text-slate-300 mt-1">
+                    {ai.raw.root_cause}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Content Safety Details */}
+          {contentSafety && <ContentSafetyDetails safety={contentSafety} />}
+
+          {/* Error Details */}
+          {isError && ai.hint && (
+            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
+              <div className="flex items-center gap-2 text-red-400 text-sm">
+                <Info size={14} />
+                <span className="font-medium">Error Details</span>
+              </div>
+              <p className="text-xs text-red-300/70 mt-1">
+                {typeof ai.hint === "string"
+                  ? ai.hint
+                  : JSON.stringify(ai.hint)}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Compact AI Badge for Feed Items
+const AIBadge = ({ ai }) => {
+  if (!ai) return null;
+
+  const isError = ai.ok === false;
+  const contentSafety = ai.content_safety;
+  const isBlocked = contentSafety?.enabled && contentSafety?.allowed === false;
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <span
+        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${
+          isError
+            ? "bg-red-500/20 text-red-400 border border-red-500/30"
+            : "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+        }`}
+      >
+        <Brain size={10} />
+        AI
+      </span>
+      {isBlocked && (
+        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-500/20 text-red-400 border border-red-500/30">
+          <Lock size={10} />
+        </span>
+      )}
+      {contentSafety?.enabled && contentSafety?.allowed && (
+        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+          <ShieldCheck size={10} />
+        </span>
+      )}
+    </div>
+  );
+};
+
 // Transaction Detail Modal Component
-const TransactionModal = ({ txId, token, onClose }) => {
+const TransactionModal = ({ txId, token, onClose, alertData }) => {
   const [txData, setTxData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [aiExpanded, setAiExpanded] = useState(true);
 
   useEffect(() => {
     const fetchTransaction = async () => {
@@ -138,6 +441,9 @@ const TransactionModal = ({ txId, token, onClose }) => {
     fetchTransaction();
   }, [txId, token]);
 
+  // Merge alertData with fetched txData for AI insights
+  const ai = alertData?.ai || txData?.ai;
+
   if (loading) {
     return (
       <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
@@ -151,7 +457,7 @@ const TransactionModal = ({ txId, token, onClose }) => {
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
       <div className="bg-slate-900 rounded-2xl border border-slate-700 w-full max-w-4xl max-h-[90vh] overflow-auto">
-        <div className="p-6 border-b border-slate-700 flex justify-between items-center sticky top-0 bg-slate-900">
+        <div className="p-6 border-b border-slate-700 flex justify-between items-center sticky top-0 bg-slate-900 z-10">
           <h2 className="text-xl font-bold text-white flex items-center gap-2">
             <Eye className="text-blue-400" /> Transaction Deep Dive
           </h2>
@@ -191,6 +497,15 @@ const TransactionModal = ({ txId, token, onClose }) => {
               </div>
             )}
           </div>
+
+          {/* AI Insight Panel */}
+          {ai && (
+            <AIInsightPanel
+              ai={ai}
+              expanded={aiExpanded}
+              onToggle={() => setAiExpanded(!aiExpanded)}
+            />
+          )}
 
           {/* 3-Way Comparison */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -450,6 +765,36 @@ const SystemHealthWidget = ({ health, uptime }) => {
         </div>
         <div className="flex items-center justify-between">
           <span className="text-slate-400 flex items-center gap-1">
+            <Brain size={12} /> AI Foundry
+          </span>
+          <span
+            className={
+              health?.ai_runtime?.configured
+                ? "text-emerald-400"
+                : "text-amber-400"
+            }
+          >
+            {health?.ai_runtime?.configured ? "● Active" : "● Not Configured"}
+          </span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-slate-400 flex items-center gap-1">
+            <Shield size={12} /> Content Safety
+          </span>
+          <span
+            className={
+              health?.safety_runtime?.configured
+                ? "text-emerald-400"
+                : "text-amber-400"
+            }
+          >
+            {health?.safety_runtime?.configured
+              ? "● Active"
+              : "● Not Configured"}
+          </span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-slate-400 flex items-center gap-1">
             <Clock size={12} /> Uptime
           </span>
           <span className="text-slate-300 font-mono">
@@ -480,6 +825,8 @@ const Dashboard = ({ token, logout }) => {
   const [geoRiskData, setGeoRiskData] = useState([]);
   const [mismatchTypes, setMismatchTypes] = useState([]);
   const [selectedTx, setSelectedTx] = useState(null);
+  const [selectedAlertData, setSelectedAlertData] = useState(null);
+  const [expandedAlertAI, setExpandedAlertAI] = useState(null);
   const [settings, setSettings] = useState({
     auto_mitigation: true,
     risk_threshold: 80,
@@ -1320,47 +1667,205 @@ const Dashboard = ({ token, logout }) => {
                       alerts.map((alert, idx) => (
                         <div
                           key={idx}
-                          className={`p-3 rounded-lg border flex items-start gap-3 animate-fade-in ${getSeverityColor(
+                          className={`p-3 rounded-lg border animate-fade-in ${getSeverityColor(
                             alert.severity
                           )}`}
                         >
-                          <div className="mt-1">
-                            {alert.severity === "error" && (
-                              <AlertOctagon size={16} />
-                            )}
-                            {alert.severity === "warning" && (
-                              <AlertTriangle size={16} />
-                            )}
-                            {alert.severity === "success" && (
-                              <CheckCircle size={16} />
-                            )}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex justify-between items-start">
-                              <p className="font-semibold text-sm truncate">
-                                {alert.message.includes("AUTO-MITIGATED") && (
-                                  <span className="bg-blue-500/20 text-blue-400 text-[10px] px-1.5 py-0.5 rounded border border-blue-500/30 mr-2 uppercase tracking-wider">
-                                    Auto-Fixed
-                                  </span>
-                                )}
-                                {alert.message}
-                              </p>
-                              <span className="text-[10px] opacity-70 whitespace-nowrap ml-2">
-                                {alert.timestamp}
-                              </span>
+                          <div className="flex items-start gap-3">
+                            <div className="mt-1">
+                              {alert.severity === "error" && (
+                                <AlertOctagon size={16} />
+                              )}
+                              {alert.severity === "warning" && (
+                                <AlertTriangle size={16} />
+                              )}
+                              {alert.severity === "success" && (
+                                <CheckCircle size={16} />
+                              )}
                             </div>
-                            {alert.analysis && (
-                              <p className="text-xs mt-1 italic opacity-80 border-l-2 border-current pl-2">
-                                🤖 AI Analysis: {alert.analysis}
-                              </p>
-                            )}
-                            <div className="flex justify-between items-center mt-1">
-                              <p className="text-xs font-mono opacity-80 truncate">
-                                ID: {alert.id}
-                              </p>
-                              <p className="text-xs font-bold opacity-90">
-                                ${alert.amount}
-                              </p>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex justify-between items-start gap-2">
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    {alert.message.includes(
+                                      "AUTO-MITIGATED"
+                                    ) && (
+                                      <span className="bg-blue-500/20 text-blue-400 text-[10px] px-1.5 py-0.5 rounded border border-blue-500/30 uppercase tracking-wider">
+                                        Auto-Fixed
+                                      </span>
+                                    )}
+                                    {alert.ai && <AIBadge ai={alert.ai} />}
+                                  </div>
+                                  <p className="font-semibold text-sm truncate mt-1">
+                                    {alert.message}
+                                  </p>
+                                </div>
+                                <span className="text-[10px] opacity-70 whitespace-nowrap">
+                                  {alert.timestamp}
+                                </span>
+                              </div>
+
+                              {/* AI Analysis Preview */}
+                              {alert.ai && alert.ai.analysis && (
+                                <div className="mt-2">
+                                  <button
+                                    onClick={() =>
+                                      setExpandedAlertAI(
+                                        expandedAlertAI === idx ? null : idx
+                                      )
+                                    }
+                                    className="w-full text-left"
+                                  >
+                                    <div
+                                      className={`p-2.5 rounded-lg border transition-all ${
+                                        alert.ai.ok === false
+                                          ? "bg-red-500/10 border-red-500/20"
+                                          : "bg-blue-500/10 border-blue-500/20 hover:border-blue-500/40"
+                                      }`}
+                                    >
+                                      <div className="flex items-center gap-2 mb-1">
+                                        <Brain
+                                          size={12}
+                                          className={
+                                            alert.ai.ok === false
+                                              ? "text-red-400"
+                                              : "text-blue-400"
+                                          }
+                                        />
+                                        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                                          AI Analysis
+                                        </span>
+                                        {alert.ai.content_safety?.enabled && (
+                                          <span
+                                            className={`text-[9px] px-1.5 py-0.5 rounded ${
+                                              alert.ai.content_safety
+                                                .allowed === false
+                                                ? "bg-red-500/20 text-red-400"
+                                                : "bg-emerald-500/20 text-emerald-400"
+                                            }`}
+                                          >
+                                            {alert.ai.content_safety.allowed ===
+                                            false
+                                              ? "BLOCKED"
+                                              : "SAFE"}
+                                          </span>
+                                        )}
+                                        <span className="ml-auto">
+                                          {expandedAlertAI === idx ? (
+                                            <ChevronUp
+                                              size={12}
+                                              className="text-slate-500"
+                                            />
+                                          ) : (
+                                            <ChevronDown
+                                              size={12}
+                                              className="text-slate-500"
+                                            />
+                                          )}
+                                        </span>
+                                      </div>
+                                      <p
+                                        className={`text-xs leading-relaxed ${
+                                          expandedAlertAI === idx
+                                            ? ""
+                                            : "line-clamp-2"
+                                        } ${
+                                          alert.ai.ok === false
+                                            ? "text-red-300/80"
+                                            : "text-slate-300"
+                                        }`}
+                                      >
+                                        {alert.ai.analysis}
+                                      </p>
+                                      {expandedAlertAI === idx &&
+                                        alert.ai.raw && (
+                                          <div className="mt-2 pt-2 border-t border-slate-700/50 space-y-1.5">
+                                            {alert.ai.raw.severity && (
+                                              <div className="flex items-center justify-between">
+                                                <span className="text-[10px] text-slate-500">
+                                                  Severity
+                                                </span>
+                                                <span
+                                                  className={`text-[10px] font-bold uppercase ${
+                                                    alert.ai.raw.severity ===
+                                                    "critical"
+                                                      ? "text-red-400"
+                                                      : alert.ai.raw
+                                                          .severity === "high"
+                                                      ? "text-orange-400"
+                                                      : alert.ai.raw
+                                                          .severity === "medium"
+                                                      ? "text-amber-400"
+                                                      : "text-emerald-400"
+                                                  }`}
+                                                >
+                                                  {alert.ai.raw.severity}
+                                                </span>
+                                              </div>
+                                            )}
+                                            {alert.ai.raw.confidence !==
+                                              undefined && (
+                                              <div className="flex items-center justify-between">
+                                                <span className="text-[10px] text-slate-500">
+                                                  Confidence
+                                                </span>
+                                                <span className="text-[10px] font-mono text-slate-300">
+                                                  {Math.round(
+                                                    alert.ai.raw.confidence *
+                                                      100
+                                                  )}
+                                                  %
+                                                </span>
+                                              </div>
+                                            )}
+                                            {alert.ai.raw
+                                              .recommended_action && (
+                                              <div className="mt-1.5">
+                                                <span className="text-[10px] text-slate-500 block">
+                                                  Recommended
+                                                </span>
+                                                <span className="text-[10px] text-white">
+                                                  {
+                                                    alert.ai.raw
+                                                      .recommended_action
+                                                  }
+                                                </span>
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
+                                    </div>
+                                  </button>
+                                </div>
+                              )}
+
+                              {/* Legacy analysis display for old format */}
+                              {!alert.ai && alert.analysis && (
+                                <p className="text-xs mt-1 italic opacity-80 border-l-2 border-current pl-2">
+                                  🤖 AI: {alert.analysis}
+                                </p>
+                              )}
+
+                              <div className="flex justify-between items-center mt-2">
+                                <p className="text-xs font-mono opacity-80 truncate">
+                                  ID: {alert.id?.slice(0, 12)}...
+                                </p>
+                                <div className="flex items-center gap-2">
+                                  <p className="text-xs font-bold opacity-90">
+                                    {formatINR(alert.amount)}
+                                  </p>
+                                  <button
+                                    onClick={() => {
+                                      setSelectedTx(alert.id);
+                                      setSelectedAlertData(alert);
+                                    }}
+                                    className="p-1 rounded hover:bg-white/10 transition-colors"
+                                    title="View Details"
+                                  >
+                                    <Eye size={12} className="text-slate-400" />
+                                  </button>
+                                </div>
+                              </div>
                             </div>
                           </div>
                         </div>
@@ -1574,6 +2079,7 @@ const Dashboard = ({ token, logout }) => {
                         <th className="p-4">Transaction ID</th>
                         <th className="p-4">Type</th>
                         <th className="p-4">Amount</th>
+                        <th className="p-4">AI</th>
                         <th className="p-4">Country</th>
                         <th className="p-4">Timestamp</th>
                         <th className="p-4 text-right">Action</th>
@@ -1584,7 +2090,10 @@ const Dashboard = ({ token, logout }) => {
                         <tr
                           key={idx}
                           className="hover:bg-slate-700/30 transition-colors cursor-pointer"
-                          onClick={() => setSelectedTx(alert.id)}
+                          onClick={() => {
+                            setSelectedTx(alert.id);
+                            setSelectedAlertData(alert);
+                          }}
                         >
                           <td className="p-4">
                             <span
@@ -1608,6 +2117,37 @@ const Dashboard = ({ token, logout }) => {
                           <td className="p-4 font-mono font-medium text-white">
                             {formatINR(alert.amount)}
                           </td>
+                          <td className="p-4">
+                            {alert.ai ? (
+                              <div className="flex items-center gap-1.5">
+                                {alert.ai.ok ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                    <Brain size={10} />
+                                    OK
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-500/20 text-red-400 border border-red-500/30">
+                                    <AlertTriangle size={10} />
+                                    ERR
+                                  </span>
+                                )}
+                                {alert.ai.content_safety?.enabled &&
+                                  (alert.ai.content_safety.allowed ? (
+                                    <ShieldCheck
+                                      size={12}
+                                      className="text-emerald-400"
+                                    />
+                                  ) : (
+                                    <ShieldAlert
+                                      size={12}
+                                      className="text-red-400"
+                                    />
+                                  ))}
+                              </div>
+                            ) : (
+                              <span className="text-slate-500 text-xs">—</span>
+                            )}
+                          </td>
                           <td className="p-4 text-slate-300">
                             {getCountryFlag(alert.country)} {alert.country}
                           </td>
@@ -1620,6 +2160,7 @@ const Dashboard = ({ token, logout }) => {
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setSelectedTx(alert.id);
+                                setSelectedAlertData(alert);
                               }}
                             >
                               <Eye size={16} />
@@ -1630,7 +2171,7 @@ const Dashboard = ({ token, logout }) => {
                       {alerts.length === 0 && (
                         <tr>
                           <td
-                            colSpan="7"
+                            colSpan="8"
                             className="p-8 text-center text-slate-500"
                           >
                             Waiting for transaction stream...
@@ -1649,7 +2190,11 @@ const Dashboard = ({ token, logout }) => {
             <TransactionModal
               txId={selectedTx}
               token={token}
-              onClose={() => setSelectedTx(null)}
+              onClose={() => {
+                setSelectedTx(null);
+                setSelectedAlertData(null);
+              }}
+              alertData={selectedAlertData}
             />
           )}
 

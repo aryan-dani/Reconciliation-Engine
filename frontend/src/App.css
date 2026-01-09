@@ -340,3 +340,108 @@ select {
 .count-up {
   animation: countUp 0.5s ease-out forwards;
 }
+
+/* Line clamp utility */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.line-clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* AI Panel animations */
+@keyframes ai-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 10px rgba(59, 130, 246, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(139, 92, 246, 0.3),
+      0 0 30px rgba(59, 130, 246, 0.2);
+  }
+}
+
+.ai-panel-glow {
+  animation: ai-glow 3s ease-in-out infinite;
+}
+
+/* Content Safety Badge pulse for blocked */
+@keyframes safety-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+.safety-blocked {
+  animation: safety-pulse 1.5s ease-in-out infinite;
+}
+
+/* Brain icon animation */
+@keyframes brain-think {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.1);
+  }
+}
+
+.brain-thinking {
+  animation: brain-think 2s ease-in-out infinite;
+}
+
+/* Gradient text for AI branding */
+.ai-gradient-text {
+  background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 50%, #ec4899 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Custom scrollbar for AI panel */
+.ai-panel-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.ai-panel-scroll::-webkit-scrollbar-track {
+  background: rgba(30, 41, 59, 0.5);
+  border-radius: 2px;
+}
+
+.ai-panel-scroll::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #3b82f6 0%, #8b5cf6 100%);
+  border-radius: 2px;
+}
+
+/* Shimmer effect for loading AI */
+@keyframes ai-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.ai-loading {
+  background: linear-gradient(
+    90deg,
+    rgba(59, 130, 246, 0.1) 0%,
+    rgba(139, 92, 246, 0.2) 50%,
+    rgba(59, 130, 246, 0.1) 100%
+  );
+  background-size: 200% 100%;
+  animation: ai-shimmer 2s infinite;
+}

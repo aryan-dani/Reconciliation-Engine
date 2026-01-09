@@ -19,6 +19,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base, Mapped, mapped_column
 import jwt
 from kafka_config import build_kafka_common_kwargs, load_kafka_settings, validate_event_hubs_kafka_settings
 from foundry_responses_client import generate_reconciliation_insight, foundry_is_configured, probe_foundry_status
+from content_safety_client import analyze_text_safety, contentsafety_is_configured
 
 import os
 from urllib.parse import urlparse
@@ -55,6 +56,84 @@ AI_RUNTIME = {
     "last_probe": None,
     "last_probe_at": None,
 }
+
+
+SAFETY_RUNTIME = {
+    "configured": contentsafety_is_configured(),
+    "endpoint": _redact_endpoint(os.getenv("AZURE_CONTENT_SAFETY_ENDPOINT")),
+    "last_ok": None,
+    "last_error": None,
+    "last_trace_id": None,
+    "last_updated_at": None,
+}
+
+
+def _record_safety_runtime(trace_id: str, result: dict) -> None:
+    SAFETY_RUNTIME["configured"] = contentsafety_is_configured()
+    SAFETY_RUNTIME["last_trace_id"] = trace_id
+    SAFETY_RUNTIME["last_updated_at"] = time.time()
+
+    if result.get("enabled") is False:
+        SAFETY_RUNTIME["last_ok"] = False
+        SAFETY_RUNTIME["last_error"] = result.get("error_code") or result.get("hint")
+        return
+
+    if result.get("ok") is True and result.get("allowed") is True:
+        SAFETY_RUNTIME["last_ok"] = True
+        SAFETY_RUNTIME["last_error"] = None
+        return
+
+    SAFETY_RUNTIME["last_ok"] = False
+    SAFETY_RUNTIME["last_error"] = result.get("error_code") or result.get("error_type") or result.get("hint")
+
+
+def _ic_require_ai_services() -> bool:
+    raw = (os.getenv("IC_REQUIRE_AI_SERVICES") or "").strip().lower()
+    return raw in {"1", "true", "yes", "y", "on"}
+
+
+def _guard_ai_with_content_safety(trace_id: str, insight: dict) -> dict:
+    """Run Content Safety on AI output and block unsafe content."""
+
+    analysis_text = insight.get("analysis")
+    if not isinstance(analysis_text, str) or not analysis_text.strip():
+        return insight
+
+    safety = analyze_text_safety(trace_id=trace_id, text=analysis_text)
+    insight["content_safety"] = safety
+    _record_safety_runtime(trace_id, safety)
+
+    if safety.get("enabled") is True and safety.get("ok") is True and safety.get("allowed") is False:
+        insight["analysis_raw"] = insight.get("analysis")
+        insight["analysis"] = "Blocked by Azure AI Content Safety policy."
+        insight["ok"] = False
+        insight["error_code"] = "CONTENT_SAFETY_BLOCKED"
+        insight["error_type"] = "ContentSafetyBlocked"
+        insight["hint"] = {"max_severity": safety.get("max_severity")}
+        insight["raw"] = None
+
+    return insight
+
+
+def _generate_ai_insight(trace_id: str, primary_txn: dict, mismatch_context: dict) -> dict:
+    """Generate Foundry insight and apply Content Safety guardrails if configured."""
+
+    if _ai_remote_allowed():
+        insight = generate_reconciliation_insight(
+            trace_id=trace_id,
+            primary_txn=primary_txn or {},
+            mismatch_context=mismatch_context or {},
+        )
+    else:
+        insight = _ai_skipped_payload(trace_id)
+
+    # Apply Content Safety if configured (optional enhancement)
+    if insight.get("ok") is True and contentsafety_is_configured():
+        insight = _guard_ai_with_content_safety(trace_id, insight)
+
+    _record_ai_runtime(trace_id, insight)
+    _log_ai_insight(trace_id, insight)
+    return insight
 
 
 def _record_ai_runtime(trace_id: str, insight: dict) -> None:
@@ -475,20 +554,21 @@ def auto_mitigate(session, txn, issue_type):
 def reconcile_transaction(session, tx_id):
     """Enhanced 3-way reconciliation logic comparing PG, CBS, and Mobile data."""
     txn = session.query(Transaction).filter_by(tx_id=tx_id).first()
-    
-    if not txn: return None, None, None, 0
-    
+
+    if not txn:
+        return None, None, None, 0
+
     pg = txn.pg_data
     cbs = txn.cbs_data
     mobile = txn.mobile_data
-    
+
     # Need at least 2 sources to reconcile
     sources_present = sum([1 for s in [pg, cbs, mobile] if s])
     if sources_present < 2:
-        return None, None, None, 0  # Wait for more data
-    
+        return None, None, None, 0
+
     primary_data = pg or cbs or mobile
-    
+
     # Check for amount mismatches across all sources
     amounts = [s['amount'] for s in [pg, cbs, mobile] if s]
     if len(set(amounts)) > 1:
@@ -496,27 +576,22 @@ def reconcile_transaction(session, tx_id):
         txn.mismatch_type = "AMOUNT"
         session.commit()
         analysis, risk, mtype = get_ai_analysis(pg, cbs, mobile)
-        if _ai_remote_allowed():
-            insight = generate_reconciliation_insight(
-                trace_id=tx_id,
-                primary_txn=primary_data or {},
-                mismatch_context={
-                    "rule_analysis": analysis,
-                    "risk_score": risk,
-                    "mismatch_type": mtype,
-                    "sources_present": sources_present,
-                    "amounts": amounts,
-                },
-            )
-        else:
-            insight = _ai_skipped_payload(tx_id)
-        _record_ai_runtime(tx_id, insight)
-        _log_ai_insight(tx_id, insight)
+        insight = _generate_ai_insight(
+            tx_id,
+            primary_data or {},
+            {
+                "rule_analysis": analysis,
+                "risk_score": risk,
+                "mismatch_type": mtype,
+                "sources_present": sources_present,
+                "amounts": amounts,
+            },
+        )
         upsert_ai_insight(session, tx_id, insight)
         emit_alert(primary_data, "⚠️ CRITICAL: AMOUNT MISMATCH DETECTED", "error", analysis, risk, mtype, ai=insight)
         auto_mitigate(session, txn, 'AMOUNT_MISMATCH')
         return None, None, None, 0
-    
+
     # Check for status mismatches
     statuses = [s['status'] for s in [pg, cbs, mobile] if s]
     if len(set(statuses)) > 1:
@@ -524,27 +599,22 @@ def reconcile_transaction(session, tx_id):
         txn.mismatch_type = "STATUS"
         session.commit()
         analysis, risk, mtype = get_ai_analysis(pg, cbs, mobile)
-        if _ai_remote_allowed():
-            insight = generate_reconciliation_insight(
-                trace_id=tx_id,
-                primary_txn=primary_data or {},
-                mismatch_context={
-                    "rule_analysis": analysis,
-                    "risk_score": risk,
-                    "mismatch_type": mtype,
-                    "sources_present": sources_present,
-                    "statuses": statuses,
-                },
-            )
-        else:
-            insight = _ai_skipped_payload(tx_id)
-        _record_ai_runtime(tx_id, insight)
-        _log_ai_insight(tx_id, insight)
+        insight = _generate_ai_insight(
+            tx_id,
+            primary_data or {},
+            {
+                "rule_analysis": analysis,
+                "risk_score": risk,
+                "mismatch_type": mtype,
+                "sources_present": sources_present,
+                "statuses": statuses,
+            },
+        )
         upsert_ai_insight(session, tx_id, insight)
         emit_alert(primary_data, "⚠️ STATE ERROR: Status Mismatch", "warning", analysis, risk, mtype, ai=insight)
         auto_mitigate(session, txn, 'STATUS_MISMATCH')
         return None, None, None, 0
-    
+
     # Check for timestamp drift
     timestamps = [s['timestamp'] for s in [pg, cbs, mobile] if s]
     if max(timestamps) - min(timestamps) > 5.0:
@@ -552,22 +622,17 @@ def reconcile_transaction(session, tx_id):
         txn.mismatch_type = "TIMESTAMP"
         session.commit()
         analysis = "Significant latency detected between system records."
-        if _ai_remote_allowed():
-            insight = generate_reconciliation_insight(
-                trace_id=tx_id,
-                primary_txn=primary_data or {},
-                mismatch_context={
-                    "rule_analysis": analysis,
-                    "risk_score": 20,
-                    "mismatch_type": "TIMESTAMP_DRIFT",
-                    "sources_present": sources_present,
-                    "timestamps": timestamps,
-                },
-            )
-        else:
-            insight = _ai_skipped_payload(tx_id)
-        _record_ai_runtime(tx_id, insight)
-        _log_ai_insight(tx_id, insight)
+        insight = _generate_ai_insight(
+            tx_id,
+            primary_data or {},
+            {
+                "rule_analysis": analysis,
+                "risk_score": 20,
+                "mismatch_type": "TIMESTAMP_DRIFT",
+                "sources_present": sources_present,
+                "timestamps": timestamps,
+            },
+        )
         upsert_ai_insight(session, tx_id, insight)
         emit_alert(primary_data, "⚠️ TIMEOUT: Timestamp Drift > 5s", "warning", analysis, 20, "TIMESTAMP_DRIFT", ai=insight)
         return None, None, None, 0
@@ -604,21 +669,16 @@ def check_missing_transactions():
             txn.status = "CRITICAL_MISSING"
             txn.mismatch_type = "MULTI_MISSING"
             analysis, risk, mtype = get_ai_analysis(txn.pg_data, txn.cbs_data, txn.mobile_data)
-            if _ai_remote_allowed():
-                insight = generate_reconciliation_insight(
-                    trace_id=txn.tx_id,
-                    primary_txn=primary_data or {},
-                    mismatch_context={
-                        "rule_analysis": analysis,
-                        "risk_score": risk,
-                        "mismatch_type": mtype,
-                        "missing_systems": missing_systems,
-                    },
-                )
-            else:
-                insight = _ai_skipped_payload(txn.tx_id)
-            _record_ai_runtime(txn.tx_id, insight)
-            _log_ai_insight(txn.tx_id, insight)
+            insight = _generate_ai_insight(
+                txn.tx_id,
+                primary_data or {},
+                {
+                    "rule_analysis": analysis,
+                    "risk_score": risk,
+                    "mismatch_type": mtype,
+                    "missing_systems": missing_systems,
+                },
+            )
             upsert_ai_insight(session, txn.tx_id, insight)
             emit_alert(primary_data, f"🔥 CRITICAL: Missing in {', '.join(missing_systems)}", "error", analysis, risk, mtype, ai=insight)
             send_ops_alert("Multi-System Data Loss", f"Transaction {txn.tx_id} missing in {missing_systems}", 15158332)
@@ -627,21 +687,16 @@ def check_missing_transactions():
             txn.status = "MISSING_CBS"
             txn.mismatch_type = "MISSING_CBS"
             analysis, risk, mtype = get_ai_analysis(txn.pg_data, None, txn.mobile_data)
-            if _ai_remote_allowed():
-                insight = generate_reconciliation_insight(
-                    trace_id=txn.tx_id,
-                    primary_txn=primary_data or {},
-                    mismatch_context={
-                        "rule_analysis": analysis,
-                        "risk_score": risk,
-                        "mismatch_type": mtype,
-                        "missing_systems": ["CBS"],
-                    },
-                )
-            else:
-                insight = _ai_skipped_payload(txn.tx_id)
-            _record_ai_runtime(txn.tx_id, insight)
-            _log_ai_insight(txn.tx_id, insight)
+            insight = _generate_ai_insight(
+                txn.tx_id,
+                primary_data or {},
+                {
+                    "rule_analysis": analysis,
+                    "risk_score": risk,
+                    "mismatch_type": mtype,
+                    "missing_systems": ["CBS"],
+                },
+            )
             upsert_ai_insight(session, txn.tx_id, insight)
             emit_alert(primary_data, "❌ MISSING IN CBS (Core Banking Data Loss)", "error", analysis, risk, mtype, ai=insight)
             send_ops_alert("Data Loss Detected", f"Transaction {txn.tx_id} missing in Core Banking", 15158332)
@@ -651,21 +706,16 @@ def check_missing_transactions():
             txn.status = "MISSING_MOBILE"
             txn.mismatch_type = "MISSING_MOBILE"
             analysis = "Transaction not replicated to mobile banking system."
-            if _ai_remote_allowed():
-                insight = generate_reconciliation_insight(
-                    trace_id=txn.tx_id,
-                    primary_txn=primary_data or {},
-                    mismatch_context={
-                        "rule_analysis": analysis,
-                        "risk_score": 60,
-                        "mismatch_type": "MISSING_MOBILE",
-                        "missing_systems": ["MOBILE"],
-                    },
-                )
-            else:
-                insight = _ai_skipped_payload(txn.tx_id)
-            _record_ai_runtime(txn.tx_id, insight)
-            _log_ai_insight(txn.tx_id, insight)
+            insight = _generate_ai_insight(
+                txn.tx_id,
+                primary_data or {},
+                {
+                    "rule_analysis": analysis,
+                    "risk_score": 60,
+                    "mismatch_type": "MISSING_MOBILE",
+                    "missing_systems": ["MOBILE"],
+                },
+            )
             upsert_ai_insight(session, txn.tx_id, insight)
             emit_alert(primary_data, "📱 MISSING IN MOBILE (Sync Failure)", "warning", analysis, 60, "MISSING_MOBILE", ai=insight)
             auto_mitigate(session, txn, 'MISSING_MOBILE')
@@ -699,6 +749,17 @@ def consumer_loop():
     """Resilient consumer loop with auto-reconnection."""
     logger.info("🎧 Enterprise 3-Way Reconciler starting...")
     logger.info(f"📊 Will listen on: {', '.join(KAFKA_SETTINGS.topics)}")
+
+    # IC_REQUIRE_AI_SERVICES only requires Foundry; Content Safety is optional
+    if _ic_require_ai_services():
+        if not foundry_is_configured():
+            logger.error(
+                "❌ IC_REQUIRE_AI_SERVICES=1 but Azure AI Foundry is not configured. "
+                "Set AZURE_FOUNDRY_ENDPOINT, AZURE_FOUNDRY_API_KEY, AZURE_FOUNDRY_DEPLOYMENT."
+            )
+            raise SystemExit(2)
+        logger.info("✅ Imagine Cup mode: AI services required (Foundry configured, Content Safety optional)")
+
     if AI_RUNTIME["configured"]:
         logger.info(
             f"🧠 Foundry Responses ENABLED | endpoint={AI_RUNTIME['endpoint']} | deployment={AI_RUNTIME['deployment']}"
@@ -707,6 +768,11 @@ def consumer_loop():
         logger.warning(
             "🧠 Foundry Responses DISABLED | set AZURE_FOUNDRY_ENDPOINT, AZURE_FOUNDRY_API_KEY, AZURE_FOUNDRY_DEPLOYMENT"
         )
+
+    if SAFETY_RUNTIME["configured"]:
+        logger.info(f"🛡️ Content Safety ENABLED | endpoint={SAFETY_RUNTIME['endpoint']}")
+    else:
+        logger.info("🛡️ Content Safety DISABLED (optional) | set AZURE_CONTENT_SAFETY_ENDPOINT, AZURE_CONTENT_SAFETY_API_KEY to enable")
     
     while True:
         consumer = get_kafka_consumer()
@@ -966,6 +1032,18 @@ def health_check():
             'last_updated_at': AI_RUNTIME.get('last_updated_at'),
             'probe': _probe_ai_cached(),
         },
+        'ai_runtime': {
+            'configured': AI_RUNTIME.get('configured'),
+            'endpoint': AI_RUNTIME.get('endpoint'),
+            'deployment': AI_RUNTIME.get('deployment'),
+            'last_ok': AI_RUNTIME.get('last_ok'),
+        },
+        'safety_runtime': {
+            'configured': SAFETY_RUNTIME.get('configured'),
+            'endpoint': SAFETY_RUNTIME.get('endpoint'),
+            'last_ok': SAFETY_RUNTIME.get('last_ok'),
+        },
+        'ic_require_ai_services': _ic_require_ai_services(),
         'uptime': f"{hours}h {minutes}m {seconds}s",
         'uptime_seconds': uptime
     })

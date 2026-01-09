@@ -148,6 +148,41 @@ Set these environment variables (or add them to `backend/.env`):
 Optional:
 
 - (no additional AI env vars; the system reads only AZURE_FOUNDRY_ENDPOINT / AZURE_FOUNDRY_API_KEY / AZURE_FOUNDRY_DEPLOYMENT)
+
+---
+
+## 🛡️ Phase 3: Add Azure AI Content Safety Guardrails (Required for AI Explanations)
+
+Imagine Cup requires **at least two Microsoft AI services**. This project uses:
+
+- **Azure AI Foundry** (model inference via Responses API)
+- **Azure AI Content Safety** (text safety checks on AI-generated explanations)
+
+When enabled, every AI explanation is analyzed by Content Safety before being stored or sent to the dashboard.
+
+### Azure setup (one-time)
+
+1. Create an **Azure AI Content Safety** resource.
+2. Copy the **Endpoint** and an **API Key**.
+
+### Local configuration
+
+Set these environment variables (or add them to `backend/.env`):
+
+- `AZURE_CONTENT_SAFETY_ENDPOINT=https://<resource>.cognitiveservices.azure.com`
+- `AZURE_CONTENT_SAFETY_API_KEY=<content-safety-key>`
+
+Optional:
+
+- `CONTENT_SAFETY_SEVERITY_THRESHOLD=4` (block if any category severity >= threshold)
+
+### Imagine Cup strict mode (optional)
+
+To make the MVP demo clearly show that the system **requires** both AI services, you can enable:
+
+- `IC_REQUIRE_AI_SERVICES=1`
+
+When this is set, the backend will refuse to start unless both Azure AI Foundry and Azure AI Content Safety are configured.
 ```
 
 ### 2. Create Kafka Topics
