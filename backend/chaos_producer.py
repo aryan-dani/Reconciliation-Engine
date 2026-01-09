@@ -56,14 +56,81 @@ def create_kafka_producer(max_retries=10, retry_delay=3):
 
 producer = None
 
-# Indian Banks and UPI
-INDIAN_BANKS = ['HDFC', 'ICICI', 'SBI', 'AXIS', 'KOTAK', 'PNB', 'BOB', 'IDBI', 'YES', 'CANARA']
-UPI_HANDLES = ['@ybl', '@paytm', '@okaxis', '@oksbi', '@okicici', '@apl', '@ibl']
+# Multi-country configuration
+COUNTRY_CONFIG = {
+    'IN': {
+        'weight': 40,
+        'currency': 'INR',
+        'banks': ['HDFC', 'ICICI', 'SBI', 'AXIS', 'KOTAK', 'PNB', 'BOB', 'IDBI', 'YES', 'CANARA'],
+        'cities': ['Mumbai', 'Delhi', 'Bangalore', 'Chennai', 'Kolkata', 'Hyderabad', 'Pune', 'Ahmedabad', 'Jaipur', 'Lucknow'],
+        'payment_handles': ['@ybl', '@paytm', '@okaxis', '@oksbi', '@okicici', '@apl', '@ibl'],
+        'amount_range': (100, 500000),
+        'locale': 'en_IN'
+    },
+    'US': {
+        'weight': 20,
+        'currency': 'USD',
+        'banks': ['Chase', 'Bank of America', 'Wells Fargo', 'Citi', 'Capital One', 'US Bank', 'PNC', 'TD Bank'],
+        'cities': ['New York', 'Los Angeles', 'Chicago', 'Houston', 'Phoenix', 'Philadelphia', 'San Antonio', 'San Diego'],
+        'payment_handles': ['@venmo', '@cashapp', '@zelle', '@paypal'],
+        'amount_range': (10, 50000),
+        'locale': 'en_US'
+    },
+    'GB': {
+        'weight': 12,
+        'currency': 'GBP',
+        'banks': ['Barclays', 'HSBC', 'Lloyds', 'NatWest', 'Santander UK', 'RBS', 'Halifax', 'TSB'],
+        'cities': ['London', 'Manchester', 'Birmingham', 'Leeds', 'Glasgow', 'Liverpool', 'Edinburgh', 'Bristol'],
+        'payment_handles': ['@monzo', '@revolut', '@starling'],
+        'amount_range': (5, 25000),
+        'locale': 'en_GB'
+    },
+    'DE': {
+        'weight': 8,
+        'currency': 'EUR',
+        'banks': ['Deutsche Bank', 'Commerzbank', 'DZ Bank', 'KfW', 'UniCredit Germany', 'ING Germany', 'N26'],
+        'cities': ['Berlin', 'Munich', 'Frankfurt', 'Hamburg', 'Cologne', 'Stuttgart', 'Düsseldorf', 'Leipzig'],
+        'payment_handles': ['@n26', '@revolut', '@klarna'],
+        'amount_range': (5, 30000),
+        'locale': 'de_DE'
+    },
+    'SG': {
+        'weight': 8,
+        'currency': 'SGD',
+        'banks': ['DBS', 'OCBC', 'UOB', 'Standard Chartered SG', 'Citibank SG', 'HSBC SG', 'Maybank SG'],
+        'cities': ['Singapore Central', 'Jurong', 'Woodlands', 'Tampines', 'Bedok', 'Ang Mo Kio', 'Clementi'],
+        'payment_handles': ['@paynow', '@grabpay', '@shopee'],
+        'amount_range': (10, 40000),
+        'locale': 'en_US'
+    },
+    'AE': {
+        'weight': 6,
+        'currency': 'AED',
+        'banks': ['Emirates NBD', 'Abu Dhabi Commercial', 'Dubai Islamic', 'Mashreq', 'RAK Bank', 'First Abu Dhabi'],
+        'cities': ['Dubai', 'Abu Dhabi', 'Sharjah', 'Ajman', 'Ras Al Khaimah', 'Fujairah'],
+        'payment_handles': ['@neopay', '@payit', '@botim'],
+        'amount_range': (50, 200000),
+        'locale': 'en_US'
+    },
+    'AU': {
+        'weight': 6,
+        'currency': 'AUD',
+        'banks': ['Commonwealth', 'Westpac', 'NAB', 'ANZ', 'Macquarie', 'ING Australia', 'Bendigo Bank'],
+        'cities': ['Sydney', 'Melbourne', 'Brisbane', 'Perth', 'Adelaide', 'Gold Coast', 'Canberra'],
+        'payment_handles': ['@osko', '@beem', '@paytm'],
+        'amount_range': (10, 50000),
+        'locale': 'en_AU'
+    }
+}
 
 # Transaction categories
-TRANSACTION_TYPES = ['UPI_TRANSFER', 'NEFT', 'IMPS', 'RTGS', 'CARD_PAYMENT', 'WALLET', 'EMI', 'BILL_PAYMENT']
+TRANSACTION_TYPES = ['TRANSFER', 'NEFT', 'IMPS', 'RTGS', 'CARD_PAYMENT', 'WALLET', 'EMI', 'BILL_PAYMENT', 'WIRE', 'ACH']
 MERCHANT_CATEGORIES = ['RETAIL', 'FOOD', 'TRAVEL', 'UTILITIES', 'ENTERTAINMENT', 'HEALTHCARE', 'EDUCATION', 'E-COMMERCE']
-INDIAN_CITIES = ['Mumbai', 'Delhi', 'Bangalore', 'Chennai', 'Kolkata', 'Hyderabad', 'Pune', 'Ahmedabad', 'Jaipur', 'Lucknow']
+
+# Legacy support
+INDIAN_BANKS = COUNTRY_CONFIG['IN']['banks']
+UPI_HANDLES = COUNTRY_CONFIG['IN']['payment_handles']
+INDIAN_CITIES = COUNTRY_CONFIG['IN']['cities']
 
 POLL_INTERVAL = 5
 
@@ -77,39 +144,77 @@ def get_chaos_status():
     return {"running": True, "speed": 1.0, "chaos_rate": 40}
 
 
+def select_country():
+    """Select a country based on weighted distribution."""
+    countries = list(COUNTRY_CONFIG.keys())
+    weights = [COUNTRY_CONFIG[c]['weight'] for c in countries]
+    return random.choices(countries, weights=weights, k=1)[0]
+
+
 def generate_transaction():
-    """Creates a base legitimate Indian transaction."""
-    upi_id = f"{fake.first_name().lower()}{random.randint(1, 999)}{random.choice(UPI_HANDLES)}"
+    """Creates a transaction from a randomly selected country."""
+    country = select_country()
+    config = COUNTRY_CONFIG[country]
+    
+    # Create faker with appropriate locale
+    country_fake = Faker(config['locale'])
+    
+    payment_handle = f"{country_fake.first_name().lower()}{random.randint(1, 999)}{random.choice(config['payment_handles'])}"
+    amount_min, amount_max = config['amount_range']
     
     return {
-        'transaction_id': fake.uuid4(),
+        'transaction_id': country_fake.uuid4(),
         'user_id': f"ACC{random.randint(10000000, 99999999)}",
-        'upi_id': upi_id,
-        'amount': round(random.uniform(100.00, 500000.00), 2),
-        'currency': 'INR',
-        'country': 'IN',
-        'city': random.choice(INDIAN_CITIES),
-        'bank': random.choice(INDIAN_BANKS),
+        'upi_id': payment_handle,
+        'amount': round(random.uniform(amount_min, amount_max), 2),
+        'currency': config['currency'],
+        'country': country,
+        'city': random.choice(config['cities']),
+        'bank': random.choice(config['banks']),
         'timestamp': time.time(),
         'status': 'SUCCESS',
         'type': random.choice(TRANSACTION_TYPES),
         'merchant_category': random.choice(MERCHANT_CATEGORIES),
-        'channel': random.choice(['UPI', 'NETBANKING', 'MOBILE_APP', 'POS', 'ATM']),
-        'ip_address': fake.ipv4(),
-        'device_id': fake.uuid4()[:8]
+        'channel': random.choice(['BANK_TRANSFER', 'MOBILE_APP', 'WEB', 'POS', 'ATM']),
+        'ip_address': country_fake.ipv4(),
+        'device_id': country_fake.uuid4()[:8]
     }
 
 
-def format_inr(amount):
-    """Format amount in Indian numbering system."""
-    if amount >= 10000000:
-        return f"₹{amount/10000000:.2f} Cr"
-    elif amount >= 100000:
-        return f"₹{amount/100000:.2f} L"
-    elif amount >= 1000:
-        return f"₹{amount/1000:.1f}K"
+# Currency symbols for formatting
+CURRENCY_SYMBOLS = {
+    'INR': '₹', 'USD': '$', 'GBP': '£', 'EUR': '€', 
+    'SGD': 'S$', 'AED': 'د.إ', 'AUD': 'A$', 'JPY': '¥'
+}
+
+
+def format_amount(amount, currency='INR'):
+    """Format amount with appropriate currency symbol."""
+    symbol = CURRENCY_SYMBOLS.get(currency, currency + ' ')
+    if currency == 'INR':
+        # Indian numbering system
+        if amount >= 10000000:
+            return f"{symbol}{amount/10000000:.2f} Cr"
+        elif amount >= 100000:
+            return f"{symbol}{amount/100000:.2f} L"
+        elif amount >= 1000:
+            return f"{symbol}{amount/1000:.1f}K"
+        else:
+            return f"{symbol}{amount:,.2f}"
     else:
-        return f"₹{amount:,.2f}"
+        # Western numbering system
+        if amount >= 1000000:
+            return f"{symbol}{amount/1000000:.2f}M"
+        elif amount >= 1000:
+            return f"{symbol}{amount/1000:.1f}K"
+        else:
+            return f"{symbol}{amount:,.2f}"
+
+
+def format_inr(amount):
+    """Format amount in Indian numbering system. (Legacy)"""
+    return format_amount(amount, 'INR')
+
 
 def inject_chaos(transaction, chaos_rate=40):
     """

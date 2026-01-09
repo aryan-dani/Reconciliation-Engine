@@ -1181,14 +1181,15 @@ def handle_settings():
 def manual_resolve():
     data = request.json
     tx_id = data.get('tx_id')
-    action = data.get('action') # 'accept_pg', 'accept_cbs', 'accept_mobile', 'mark_resolved'
+    action = data.get('action') # 'accept_pg', 'accept_cbs', 'accept_mobile', 'resolve', 'ignore'
     
     session = Session()
     txn = session.query(Transaction).filter_by(tx_id=tx_id).first()
     
     if not txn:
         session.close()
-        return jsonify({'message': 'Transaction not found'}), 404
+        # Transaction might not be in database yet, but we can still acknowledge
+        return jsonify({'message': 'Transaction acknowledged', 'status': 'not_in_db'}), 200
     
     source_data = txn.pg_data or txn.cbs_data or txn.mobile_data
     
@@ -1207,6 +1208,12 @@ def manual_resolve():
         txn.cbs_data = txn.mobile_data
         txn.status = "MANUALLY_RESOLVED"
         msg = "Aligned all systems to Mobile Banking"
+    elif action == 'resolve':
+        txn.status = "MANUALLY_RESOLVED"
+        msg = "Marked as resolved by operator"
+    elif action == 'ignore':
+        txn.status = "IGNORED"
+        msg = "Marked as ignored by operator"
     else:
         txn.status = "MANUALLY_RESOLVED"
         msg = "Marked as resolved by operator"
@@ -1217,12 +1224,6 @@ def manual_resolve():
     session.close()
     
     return jsonify({'message': 'Transaction resolved successfully'})
-
-import csv
-import io
-from flask import Flask, request, jsonify, Response
-
-# ... existing code ...
 
 @app.route('/api/export', methods=['GET'])
 @token_required

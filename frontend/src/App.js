@@ -25,7 +25,6 @@ import {
   Bell,
   LogOut,
   TrendingUp,
-  IndianRupee,
   AlertOctagon,
   RefreshCw,
   Globe,
@@ -45,7 +44,6 @@ import {
   Database,
   Clock,
   ArrowUpRight,
-  ArrowDownRight,
   BarChart3,
   Target,
   Cpu,
@@ -60,6 +58,11 @@ import {
   Lock,
   Unlock,
   Info,
+  Maximize2,
+  MessageSquare,
+  Lightbulb,
+  ExternalLink,
+  Banknote,
 } from "lucide-react";
 import "./App.css";
 
@@ -100,21 +103,55 @@ const playAlertSound = () => {
   oscillator.stop(audioContext.currentTime + 0.5);
 };
 
-// Format amount in Indian Rupees (Lakhs, Crores)
-const formatINR = (amount) => {
-  if (!amount && amount !== 0) return "₹0";
+// Currency symbols mapping
+const CURRENCY_SYMBOLS = {
+  INR: "₹",
+  USD: "$",
+  GBP: "£",
+  EUR: "€",
+  SGD: "S$",
+  AED: "د.إ",
+  AUD: "A$",
+  JPY: "¥",
+  CAD: "C$",
+};
+
+// Format amount with currency support
+const formatCurrency = (amount, currency = "INR") => {
+  if (!amount && amount !== 0)
+    return `${CURRENCY_SYMBOLS[currency] || currency}0`;
   const num = parseFloat(amount);
-  if (num >= 10000000) {
-    return `₹${(num / 10000000).toFixed(2)} Cr`;
-  } else if (num >= 100000) {
-    return `₹${(num / 100000).toFixed(2)} L`;
+  const symbol = CURRENCY_SYMBOLS[currency] || currency + " ";
+
+  if (currency === "INR") {
+    // Indian numbering system
+    if (num >= 10000000) {
+      return `${symbol}${(num / 10000000).toFixed(2)} Cr`;
+    } else if (num >= 100000) {
+      return `${symbol}${(num / 100000).toFixed(2)} L`;
+    } else {
+      return `${symbol}${num.toLocaleString("en-IN", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })}`;
+    }
   } else {
-    return `₹${num.toLocaleString("en-IN", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })}`;
+    // Western numbering system
+    if (num >= 1000000) {
+      return `${symbol}${(num / 1000000).toFixed(2)}M`;
+    } else if (num >= 1000) {
+      return `${symbol}${(num / 1000).toFixed(1)}K`;
+    } else {
+      return `${symbol}${num.toLocaleString("en-US", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })}`;
+    }
   }
 };
+
+// Legacy support - format amount in Indian Rupees
+const formatINR = (amount) => formatCurrency(amount, "INR");
 
 // Mismatch type colors for pie chart
 const MISMATCH_COLORS = {
@@ -165,12 +202,35 @@ const ContentSafetyBadge = ({ safety }) => {
   );
 };
 
+// Helper function to normalize Content Safety categories
+// Backend can return either array [{category: "Hate", severity: 2}] or object {Hate: 2}
+const normalizeCategories = (categories) => {
+  if (!categories) return [];
+
+  // If it's an array (Azure format), transform to [{name, severity}]
+  if (Array.isArray(categories)) {
+    return categories.map((item) => ({
+      name: item.category || item.name || "Unknown",
+      severity: typeof item.severity === "number" ? item.severity : 0,
+    }));
+  }
+
+  // If it's an object {Hate: 2}, transform to [{name, severity}]
+  if (typeof categories === "object") {
+    return Object.entries(categories).map(([name, value]) => ({
+      name,
+      severity: typeof value === "number" ? value : value?.severity || 0,
+    }));
+  }
+
+  return [];
+};
+
 // Content Safety Details Component
 const ContentSafetyDetails = ({ safety }) => {
   if (!safety || safety.enabled === false) return null;
 
-  const categories = safety.categories || {};
-  const categoryList = Object.entries(categories);
+  const categoryList = normalizeCategories(safety.categories);
 
   return (
     <div className="mt-3 p-3 bg-slate-900/50 rounded-lg border border-slate-700/50">
@@ -182,24 +242,24 @@ const ContentSafetyDetails = ({ safety }) => {
       </div>
       {categoryList.length > 0 ? (
         <div className="grid grid-cols-2 gap-2">
-          {categoryList.map(([category, severity]) => (
+          {categoryList.map((cat, idx) => (
             <div
-              key={category}
+              key={cat.name || idx}
               className="flex items-center justify-between p-2 bg-slate-800/50 rounded"
             >
               <span className="text-xs text-slate-400 capitalize">
-                {category.replace(/_/g, " ")}
+                {String(cat.name).replace(/_/g, " ")}
               </span>
               <span
                 className={`text-xs font-mono font-bold ${
-                  severity >= 4
+                  cat.severity >= 4
                     ? "text-red-400"
-                    : severity >= 2
+                    : cat.severity >= 2
                     ? "text-amber-400"
                     : "text-emerald-400"
                 }`}
               >
-                {severity}
+                {cat.severity}
               </span>
             </div>
           ))}
@@ -386,37 +446,338 @@ const AIInsightPanel = ({ ai, expanded, onToggle }) => {
   );
 };
 
-// Compact AI Badge for Feed Items
-const AIBadge = ({ ai }) => {
-  if (!ai) return null;
+// Full-Screen AI Analysis Drawer
+const AIDrawer = ({ alert, onClose, onViewTransaction }) => {
+  if (!alert) return null;
 
-  const isError = ai.ok === false;
-  const contentSafety = ai.content_safety;
-  const isBlocked = contentSafety?.enabled && contentSafety?.allowed === false;
+  const ai = alert.ai;
+  const isError = ai?.ok === false;
+  const analysis =
+    ai?.analysis || "No AI analysis available for this transaction.";
+  const contentSafety = ai?.content_safety;
 
   return (
-    <div className="flex items-center gap-1.5">
-      <span
-        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${
-          isError
-            ? "bg-red-500/20 text-red-400 border border-red-500/30"
-            : "bg-blue-500/20 text-blue-400 border border-blue-500/30"
-        }`}
-      >
-        <Brain size={10} />
-        AI
-      </span>
-      {isBlocked && (
-        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-500/20 text-red-400 border border-red-500/30">
-          <Lock size={10} />
-        </span>
-      )}
-      {contentSafety?.enabled && contentSafety?.allowed && (
-        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-          <ShieldCheck size={10} />
-        </span>
-      )}
-    </div>
+    <>
+      {/* Overlay */}
+      <div className="ai-drawer-overlay" onClick={onClose} />
+
+      {/* Drawer Panel */}
+      <div className="ai-drawer">
+        {/* Header */}
+        <div className="flex-shrink-0 p-6 border-b border-slate-700/50 bg-gradient-to-r from-slate-900 to-slate-800">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="p-3 rounded-xl bg-gradient-to-br from-blue-500/20 to-purple-500/20 border border-blue-500/30">
+                <Brain size={24} className="text-blue-400" />
+              </div>
+              <div>
+                <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                  AI Analysis
+                  <Sparkles size={18} className="text-purple-400" />
+                </h2>
+                <p className="text-sm text-slate-400">
+                  Powered by Azure AI Foundry
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={onClose}
+              className="p-2 hover:bg-slate-700/50 rounded-lg transition-colors"
+            >
+              <X size={24} className="text-slate-400" />
+            </button>
+          </div>
+        </div>
+
+        {/* Scrollable Content */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-6 ai-panel-scroll">
+          {/* Transaction Summary */}
+          <div className="pro-card p-5">
+            <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+              <FileText size={14} />
+              Transaction Details
+            </h3>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="p-3 bg-slate-900/50 rounded-lg">
+                <span className="text-xs text-slate-500">Transaction ID</span>
+                <p className="text-sm font-mono text-white mt-1">
+                  {alert.id?.slice(0, 16)}...
+                </p>
+              </div>
+              <div className="p-3 bg-slate-900/50 rounded-lg">
+                <span className="text-xs text-slate-500">Amount</span>
+                <p className="text-sm font-bold text-white mt-1">
+                  {formatINR(alert.amount)}
+                </p>
+              </div>
+              <div className="p-3 bg-slate-900/50 rounded-lg">
+                <span className="text-xs text-slate-500">Status</span>
+                <p
+                  className={`text-sm font-semibold mt-1 ${
+                    alert.severity === "error"
+                      ? "text-red-400"
+                      : alert.severity === "warning"
+                      ? "text-amber-400"
+                      : "text-emerald-400"
+                  }`}
+                >
+                  {alert.severity?.toUpperCase()}
+                </p>
+              </div>
+              <div className="p-3 bg-slate-900/50 rounded-lg">
+                <span className="text-xs text-slate-500">Timestamp</span>
+                <p className="text-sm text-slate-300 mt-1">{alert.timestamp}</p>
+              </div>
+            </div>
+          </div>
+
+          {/* AI Status Badges */}
+          <div className="flex flex-wrap gap-3">
+            {ai?.ok ? (
+              <span className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                <CheckCircle size={16} />
+                Analysis Complete
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium bg-red-500/20 text-red-400 border border-red-500/30">
+                <AlertOctagon size={16} />
+                {ai?.error_code || "Analysis Error"}
+              </span>
+            )}
+            {contentSafety && <ContentSafetyBadge safety={contentSafety} />}
+            {ai?.trace_id && (
+              <span className="inline-flex items-center gap-2 px-3 py-2 rounded-full text-xs font-mono text-slate-500 bg-slate-800/50 border border-slate-700/50">
+                Trace: {ai.trace_id.slice(0, 12)}...
+              </span>
+            )}
+          </div>
+
+          {/* Main AI Analysis */}
+          <div className="ai-message">
+            <div className="flex items-start gap-4">
+              <div className="flex-shrink-0">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
+                  <Bot size={20} className="text-white" />
+                </div>
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-sm font-semibold text-white">
+                    AI Assistant
+                  </span>
+                  <span className="text-xs text-slate-500">
+                    Azure AI Foundry
+                  </span>
+                </div>
+                <div className="prose prose-invert prose-sm max-w-none">
+                  <p className="text-base text-slate-200 leading-relaxed whitespace-pre-wrap">
+                    {analysis}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Structured AI Data */}
+          {ai?.raw && (
+            <div className="space-y-4">
+              <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                <BarChart3 size={14} />
+                Analysis Metrics
+              </h3>
+
+              {/* Severity */}
+              {ai.raw.severity && (
+                <div className="pro-card p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-sm text-slate-400 flex items-center gap-2">
+                      <AlertTriangle size={14} />
+                      Risk Severity
+                    </span>
+                    <span
+                      className={`px-4 py-1.5 rounded-full text-sm font-bold uppercase ${
+                        ai.raw.severity === "critical"
+                          ? "bg-red-500/20 text-red-400 border border-red-500/30"
+                          : ai.raw.severity === "high"
+                          ? "bg-orange-500/20 text-orange-400 border border-orange-500/30"
+                          : ai.raw.severity === "medium"
+                          ? "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                          : "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                      }`}
+                    >
+                      {ai.raw.severity}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Confidence Score */}
+              {ai.raw.confidence !== undefined && (
+                <div className="pro-card p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-sm text-slate-400 flex items-center gap-2">
+                      <Target size={14} />
+                      AI Confidence
+                    </span>
+                    <span className="text-lg font-bold text-white font-mono">
+                      {Math.round(ai.raw.confidence * 100)}%
+                    </span>
+                  </div>
+                  <div className="h-3 bg-slate-800 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 rounded-full transition-all duration-700"
+                      style={{ width: `${ai.raw.confidence * 100}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Recommended Action */}
+              {ai.raw.recommended_action && (
+                <div className="pro-card p-5">
+                  <div className="flex items-start gap-3">
+                    <div className="p-2 rounded-lg bg-emerald-500/20 border border-emerald-500/30">
+                      <Lightbulb size={18} className="text-emerald-400" />
+                    </div>
+                    <div>
+                      <span className="text-xs text-slate-500 uppercase tracking-wider">
+                        Recommended Action
+                      </span>
+                      <p className="text-base text-white mt-1 font-medium">
+                        {ai.raw.recommended_action}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Root Cause */}
+              {ai.raw.root_cause && (
+                <div className="pro-card p-5">
+                  <div className="flex items-start gap-3">
+                    <div className="p-2 rounded-lg bg-amber-500/20 border border-amber-500/30">
+                      <MessageSquare size={18} className="text-amber-400" />
+                    </div>
+                    <div>
+                      <span className="text-xs text-slate-500 uppercase tracking-wider">
+                        Root Cause Analysis
+                      </span>
+                      <p className="text-base text-slate-300 mt-1">
+                        {ai.raw.root_cause}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Content Safety Details */}
+          {contentSafety && contentSafety.enabled !== false && (
+            <div className="pro-card p-5">
+              <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                <Shield size={14} className="text-cyan-400" />
+                Content Safety Analysis
+              </h3>
+
+              <div className="flex items-center gap-3 mb-4">
+                {contentSafety.allowed === false ? (
+                  <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/20 border border-red-500/30">
+                    <Lock size={16} className="text-red-400" />
+                    <span className="text-red-400 font-medium">
+                      Content Blocked
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/20 border border-emerald-500/30">
+                    <Unlock size={16} className="text-emerald-400" />
+                    <span className="text-emerald-400 font-medium">
+                      Content Approved
+                    </span>
+                  </div>
+                )}
+                <span className="text-sm text-slate-500">
+                  Max Severity:{" "}
+                  <span className="font-mono text-white">
+                    {contentSafety.max_severity || 0}
+                  </span>
+                </span>
+              </div>
+
+              {contentSafety.categories &&
+                (Array.isArray(contentSafety.categories)
+                  ? contentSafety.categories.length > 0
+                  : Object.keys(contentSafety.categories).length > 0) && (
+                  <div className="grid grid-cols-2 gap-3">
+                    {normalizeCategories(contentSafety.categories).map(
+                      (cat, idx) => (
+                        <div
+                          key={cat.name || idx}
+                          className="flex items-center justify-between p-3 bg-slate-900/50 rounded-lg"
+                        >
+                          <span className="text-sm text-slate-400 capitalize">
+                            {String(cat.name).replace(/_/g, " ")}
+                          </span>
+                          <span
+                            className={`text-sm font-mono font-bold ${
+                              cat.severity >= 4
+                                ? "text-red-400"
+                                : cat.severity >= 2
+                                ? "text-amber-400"
+                                : "text-emerald-400"
+                            }`}
+                          >
+                            {cat.severity}
+                          </span>
+                        </div>
+                      )
+                    )}
+                  </div>
+                )}
+            </div>
+          )}
+
+          {/* Error Details */}
+          {isError && ai?.hint && (
+            <div className="pro-card p-5 border-red-500/30 bg-red-500/5">
+              <div className="flex items-center gap-2 text-red-400 mb-3">
+                <Info size={16} />
+                <span className="font-semibold">Error Details</span>
+              </div>
+              <p className="text-sm text-red-300/80">
+                {typeof ai.hint === "string"
+                  ? ai.hint
+                  : JSON.stringify(ai.hint)}
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Footer Actions */}
+        <div className="flex-shrink-0 p-4 border-t border-slate-700/50 bg-slate-900/50">
+          <div className="flex gap-3">
+            <button
+              onClick={onClose}
+              className="flex-1 px-4 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-medium transition-colors"
+            >
+              Close
+            </button>
+            <button
+              onClick={() => {
+                if (onViewTransaction) {
+                  onViewTransaction(alert.id, alert);
+                }
+                onClose();
+              }}
+              className="flex-1 px-4 py-3 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white font-medium transition-colors flex items-center justify-center gap-2"
+            >
+              <ExternalLink size={16} />
+              View Full Transaction
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
   );
 };
 
@@ -435,6 +796,7 @@ const TransactionModal = ({ txId, token, onClose, alertData }) => {
         setTxData(res.data);
       } catch (err) {
         console.error("Failed to fetch transaction details");
+        // txData will remain null, we'll use alertData
       }
       setLoading(false);
     };
@@ -444,9 +806,29 @@ const TransactionModal = ({ txId, token, onClose, alertData }) => {
   // Merge alertData with fetched txData for AI insights
   const ai = alertData?.ai || txData?.ai;
 
+  // Use txData if available, otherwise fall back to alertData
+  const displayId = txData?.tx_id || alertData?.id || txId;
+  const displayStatus =
+    txData?.status ||
+    (alertData?.severity === "error"
+      ? "MISMATCH"
+      : alertData?.severity === "warning"
+      ? "WARNING"
+      : "MATCHED");
+  const displayAmount =
+    txData?.sources?.payment_gateway?.amount || alertData?.amount;
+  const displayCurrency =
+    txData?.sources?.payment_gateway?.currency || alertData?.currency || "INR";
+  const displayCountry =
+    txData?.sources?.payment_gateway?.country || alertData?.country;
+  const displayMismatchType = txData?.mismatch_type || alertData?.mismatch_type;
+
   if (loading) {
     return (
-      <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+      <div
+        className="fixed inset-0 flex items-center justify-center z-50"
+        style={{ background: "rgba(0, 0, 0, 0.95)" }}
+      >
         <div className="bg-slate-800 p-8 rounded-xl">
           <RefreshCw className="animate-spin text-blue-400 w-8 h-8" />
         </div>
@@ -455,9 +837,18 @@ const TransactionModal = ({ txId, token, onClose, alertData }) => {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className="bg-slate-900 rounded-2xl border border-slate-700 w-full max-w-4xl max-h-[90vh] overflow-auto">
-        <div className="p-6 border-b border-slate-700 flex justify-between items-center sticky top-0 bg-slate-900 z-10">
+    <div
+      className="fixed inset-0 flex items-center justify-center z-50 p-4"
+      style={{ background: "rgba(0, 0, 0, 0.9)" }}
+    >
+      <div
+        className="rounded-2xl border border-slate-700 w-full max-w-4xl max-h-[90vh] overflow-auto"
+        style={{ background: "#0a0f1a" }}
+      >
+        <div
+          className="p-6 border-b border-slate-700 flex justify-between items-center sticky top-0 z-10"
+          style={{ background: "#0a0f1a" }}
+        >
           <h2 className="text-xl font-bold text-white flex items-center gap-2">
             <Eye className="text-blue-400" /> Transaction Deep Dive
           </h2>
@@ -474,25 +865,41 @@ const TransactionModal = ({ txId, token, onClose, alertData }) => {
           <div className="flex flex-wrap gap-4 items-center">
             <div className="px-4 py-2 bg-slate-800 rounded-lg">
               <span className="text-slate-400 text-xs">Transaction ID</span>
-              <p className="text-white font-mono text-sm">{txData?.tx_id}</p>
+              <p className="text-white font-mono text-sm">
+                {displayId ? `${String(displayId).slice(0, 20)}...` : "N/A"}
+              </p>
             </div>
             <div
               className={`px-4 py-2 rounded-lg ${
-                txData?.status === "MATCHED"
+                displayStatus === "MATCHED"
                   ? "bg-emerald-500/20 text-emerald-400"
-                  : txData?.status?.includes("RESOLVED")
+                  : displayStatus?.includes("RESOLVED")
                   ? "bg-blue-500/20 text-blue-400"
                   : "bg-red-500/20 text-red-400"
               }`}
             >
               <span className="text-xs opacity-70">Status</span>
-              <p className="font-semibold">{txData?.status}</p>
+              <p className="font-semibold">{displayStatus || "UNKNOWN"}</p>
             </div>
-            {txData?.mismatch_type && (
+            {displayAmount && (
+              <div className="px-4 py-2 bg-slate-800 rounded-lg">
+                <span className="text-slate-400 text-xs">Amount</span>
+                <p className="text-white font-mono text-sm font-bold">
+                  {displayCurrency} {displayAmount?.toLocaleString()}
+                </p>
+              </div>
+            )}
+            {displayCountry && (
+              <div className="px-4 py-2 bg-slate-800 rounded-lg">
+                <span className="text-slate-400 text-xs">Country</span>
+                <p className="text-white text-sm">{displayCountry}</p>
+              </div>
+            )}
+            {displayMismatchType && (
               <div className="px-4 py-2 bg-amber-500/20 rounded-lg">
                 <span className="text-amber-400 text-xs">Mismatch Type</span>
                 <p className="text-amber-300 font-semibold">
-                  {txData.mismatch_type}
+                  {displayMismatchType}
                 </p>
               </div>
             )}
@@ -826,7 +1233,8 @@ const Dashboard = ({ token, logout }) => {
   const [mismatchTypes, setMismatchTypes] = useState([]);
   const [selectedTx, setSelectedTx] = useState(null);
   const [selectedAlertData, setSelectedAlertData] = useState(null);
-  const [expandedAlertAI, setExpandedAlertAI] = useState(null);
+  const [aiDrawerAlert, setAiDrawerAlert] = useState(null);
+  const [showNotifications, setShowNotifications] = useState(false);
   const [settings, setSettings] = useState({
     auto_mitigation: true,
     risk_threshold: 80,
@@ -838,14 +1246,72 @@ const Dashboard = ({ token, logout }) => {
     chaos_rate: 40,
   });
 
+  // Transaction filter state
+  const [txFilter, setTxFilter] = useState("all"); // 'all', 'errors', 'warnings', 'success'
+
   // Connection status tracking
   const [socketConnected, setSocketConnected] = useState(false);
   const [kafkaConnected, setKafkaConnected] = useState(false);
   const [backendHealth, setBackendHealth] = useState(null);
-  const [lastUpdateTime, setLastUpdateTime] = useState(null);
 
   const alertSoundEnabled = useRef(true);
   const reconnectAttempts = useRef(0);
+  const alertQueue = useRef([]);
+  const isProcessingQueue = useRef(false);
+
+  // Process alert queue smoothly - one at a time with delay
+  const processAlertQueue = useCallback(() => {
+    if (isProcessingQueue.current || alertQueue.current.length === 0) return;
+
+    isProcessingQueue.current = true;
+
+    const processNext = () => {
+      if (alertQueue.current.length === 0) {
+        isProcessingQueue.current = false;
+        return;
+      }
+
+      const nextAlert = alertQueue.current.shift();
+
+      setAlerts((prev) => {
+        const newAlerts = [nextAlert, ...prev];
+        return newAlerts.slice(0, 100);
+      });
+
+      if (nextAlert.severity === "error" && nextAlert.amount) {
+        setRiskAmount((prev) => prev + nextAlert.amount);
+      }
+
+      setChartData((prev) => {
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString("en-US", {
+          hour12: false,
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+        const newData = [
+          ...prev,
+          {
+            time: timeStr,
+            amount: nextAlert.amount,
+            severity:
+              nextAlert.severity === "error"
+                ? 100
+                : nextAlert.severity === "warning"
+                ? 50
+                : 10,
+          },
+        ];
+        return newData.slice(-30);
+      });
+
+      // Process next item after a delay for smooth animation
+      setTimeout(processNext, 300);
+    };
+
+    processNext();
+  }, []);
 
   // Fetch chaos producer status (no auth required)
   const fetchChaosStatus = useCallback(async () => {
@@ -944,15 +1410,12 @@ const Dashboard = ({ token, logout }) => {
     });
 
     socket.on("new_alert", (data) => {
-      setAlerts((prev) => {
-        const newAlerts = [data, ...prev];
-        return newAlerts.slice(0, 100);
-      });
+      // Add to queue for smooth processing
+      alertQueue.current.push(data);
+      processAlertQueue();
 
+      // Play sound alert for critical issues immediately
       if (data.severity === "error" && data.amount) {
-        setRiskAmount((prev) => prev + data.amount);
-
-        // Play sound alert for critical issues
         if (
           data.sound_alert &&
           alertSoundEnabled.current &&
@@ -961,32 +1424,6 @@ const Dashboard = ({ token, logout }) => {
           playAlertSound();
         }
       }
-
-      setChartData((prev) => {
-        const now = new Date();
-        const timeStr = now.toLocaleTimeString("en-US", {
-          hour12: false,
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-        });
-        const newData = [
-          ...prev,
-          {
-            time: timeStr,
-            amount: data.amount,
-            severity:
-              data.severity === "error"
-                ? 100
-                : data.severity === "warning"
-                ? 50
-                : 10,
-          },
-        ];
-        return newData.slice(-30);
-      });
-
-      setLastUpdateTime(new Date());
     });
 
     // Fetch initial settings
@@ -1032,7 +1469,7 @@ const Dashboard = ({ token, logout }) => {
       clearInterval(chaosInterval);
       clearInterval(healthInterval);
     };
-  }, [fetchStats, fetchChaosStatus, settings.sound_alerts]);
+  }, [fetchStats, fetchChaosStatus, processAlertQueue, settings.sound_alerts]);
 
   const downloadReport = async () => {
     try {
@@ -1046,54 +1483,87 @@ const Dashboard = ({ token, logout }) => {
       link.setAttribute("download", "reconciliation_report.csv");
       document.body.appendChild(link);
       link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
     } catch (error) {
       console.error("Error downloading report:", error);
+      alert(
+        "Failed to download report. Please ensure the backend is running and transactions exist."
+      );
     }
   };
 
   const handleResolve = async (tx_id, action) => {
     try {
-      await axios.post(
+      const response = await axios.post(
         `${SOCKET_URL}/api/resolve`,
         { tx_id, action },
         {
           headers: { Authorization: `Bearer ${token}` },
         }
       );
+
+      // Update local state regardless of backend result
       setAlerts((prev) =>
         prev.map((a) =>
           a.id === tx_id
-            ? { ...a, severity: "success", message: "Manually Resolved" }
+            ? {
+                ...a,
+                severity: action === "ignore" ? "warning" : "success",
+                message:
+                  action === "ignore"
+                    ? "Ignored by operator"
+                    : "Manually Resolved",
+              }
             : a
         )
       );
+
+      console.log("Transaction resolved:", response.data);
     } catch (err) {
       console.error("Failed to resolve", err);
+      // Still update local state even if backend fails
+      setAlerts((prev) =>
+        prev.map((a) =>
+          a.id === tx_id
+            ? { ...a, severity: "success", message: "Resolved (local only)" }
+            : a
+        )
+      );
     }
   };
 
   const toggleAutoMitigation = async () => {
     const newSetting = !settings.auto_mitigation;
+    // Optimistically update UI first
+    setSettings((prev) => ({ ...prev, auto_mitigation: newSetting }));
     try {
       await axios.post(`${SOCKET_URL}/api/settings`, {
         auto_mitigation: newSetting,
       });
-      setSettings((prev) => ({ ...prev, auto_mitigation: newSetting }));
+      console.log("Auto-mitigation toggled to:", newSetting);
     } catch (err) {
-      console.error("Failed to update settings");
+      // Revert on error
+      setSettings((prev) => ({ ...prev, auto_mitigation: !newSetting }));
+      console.error("Failed to update settings:", err);
     }
   };
 
   const toggleSoundAlerts = async () => {
     const newSetting = !settings.sound_alerts;
+    // Optimistically update UI first
+    setSettings((prev) => ({ ...prev, sound_alerts: newSetting }));
+    alertSoundEnabled.current = newSetting;
     try {
       await axios.post(`${SOCKET_URL}/api/settings`, {
         sound_alerts: newSetting,
       });
-      setSettings((prev) => ({ ...prev, sound_alerts: newSetting }));
-      alertSoundEnabled.current = newSetting;
+      console.log("Sound alerts toggled to:", newSetting);
     } catch (err) {
-      console.error("Failed to update sound settings");
+      // Revert on error
+      setSettings((prev) => ({ ...prev, sound_alerts: !newSetting }));
+      alertSoundEnabled.current = !newSetting;
+      console.error("Failed to update sound settings:", err);
     }
   };
 
@@ -1176,6 +1646,25 @@ const Dashboard = ({ token, logout }) => {
             )}
           </button>
           <button
+            onClick={() => setActiveTab("ai-insights")}
+            className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 ${
+              activeTab === "ai-insights"
+                ? "bg-gradient-to-r from-purple-600/20 to-pink-600/20 text-white border border-purple-500/30 shadow-lg shadow-purple-900/20"
+                : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
+            }`}
+          >
+            <Brain
+              size={20}
+              className={activeTab === "ai-insights" ? "text-purple-400" : ""}
+            />
+            <span className="font-medium">AI Insights</span>
+            {alerts.filter((a) => a.ai).length > 0 && (
+              <span className="ml-auto px-2 py-0.5 text-xs font-bold bg-purple-500/20 text-purple-400 rounded-full border border-purple-500/30">
+                {alerts.filter((a) => a.ai).length}
+              </span>
+            )}
+          </button>
+          <button
             onClick={() => setActiveTab("transactions")}
             className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 ${
               activeTab === "transactions"
@@ -1188,9 +1677,15 @@ const Dashboard = ({ token, logout }) => {
               className={activeTab === "transactions" ? "text-blue-400" : ""}
             />
             <span className="font-medium">Transactions</span>
-            {stats.total_issues > 0 && (
+            {alerts.filter(
+              (a) => a.severity === "error" || a.severity === "warning"
+            ).length > 0 && (
               <span className="ml-auto px-2 py-0.5 text-xs font-bold bg-red-500/20 text-red-400 rounded-full border border-red-500/30">
-                {stats.total_issues}
+                {
+                  alerts.filter(
+                    (a) => a.severity === "error" || a.severity === "warning"
+                  ).length
+                }
               </span>
             )}
           </button>
@@ -1296,6 +1791,15 @@ const Dashboard = ({ token, logout }) => {
                 <span>Live Operations Center</span>
               </>
             )}
+            {activeTab === "ai-insights" && (
+              <>
+                <div className="p-2 bg-purple-500/10 rounded-lg">
+                  <Brain className="text-purple-400" size={20} />
+                </div>
+                <span>AI Insights Center</span>
+                <Sparkles size={16} className="text-purple-400" />
+              </>
+            )}
             {activeTab === "transactions" && (
               <>
                 <div className="p-2 bg-blue-500/10 rounded-lg">
@@ -1360,17 +1864,129 @@ const Dashboard = ({ token, logout }) => {
               )}
             </button>
 
-            <button className="p-2.5 text-slate-400 hover:text-white transition-colors relative bg-slate-800/50 rounded-xl border border-slate-700/50">
-              <Bell size={18} />
-              {alerts.filter((a) => a.severity === "error").length > 0 && (
-                <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full border-2 border-slate-900 text-[10px] font-bold flex items-center justify-center text-white">
-                  {Math.min(
-                    alerts.filter((a) => a.severity === "error").length,
-                    9
-                  )}
-                </span>
+            <div className="relative">
+              <button
+                onClick={() => setShowNotifications(!showNotifications)}
+                className={`p-2.5 transition-colors relative rounded-xl border ${
+                  showNotifications
+                    ? "text-blue-400 bg-blue-500/10 border-blue-500/30"
+                    : "text-slate-400 hover:text-white bg-slate-800/50 border-slate-700/50"
+                }`}
+                title="View critical alerts"
+              >
+                <Bell size={18} />
+                {alerts.filter((a) => a.severity === "error").length > 0 && (
+                  <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full border-2 border-slate-900 text-[10px] font-bold flex items-center justify-center text-white">
+                    {Math.min(
+                      alerts.filter((a) => a.severity === "error").length,
+                      9
+                    )}
+                  </span>
+                )}
+              </button>
+
+              {/* Notification Dropdown */}
+              {showNotifications && (
+                <>
+                  {/* Click outside to close */}
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setShowNotifications(false)}
+                  />
+                  <div
+                    className="absolute right-0 mt-2 w-80 rounded-xl shadow-2xl z-50 overflow-hidden"
+                    style={{
+                      background: "#0a0f1a",
+                      border: "1px solid #334155",
+                    }}
+                  >
+                    <div
+                      className="p-3 flex justify-between items-center"
+                      style={{
+                        borderBottom: "1px solid #334155",
+                        background: "#0d1321",
+                      }}
+                    >
+                      <h4 className="font-semibold text-white flex items-center gap-2">
+                        <AlertOctagon size={14} className="text-red-400" />
+                        Critical Alerts
+                      </h4>
+                      <span className="text-xs bg-red-500/20 text-red-400 px-2 py-0.5 rounded-full">
+                        {alerts.filter((a) => a.severity === "error").length}
+                      </span>
+                    </div>
+                    <div
+                      className="max-h-64 overflow-y-auto"
+                      style={{ background: "#0a0f1a" }}
+                    >
+                      {alerts.filter((a) => a.severity === "error").length ===
+                      0 ? (
+                        <div className="p-4 text-center text-slate-500">
+                          <CheckCircle
+                            size={24}
+                            className="mx-auto mb-2 opacity-50"
+                          />
+                          <p className="text-sm">No critical alerts</p>
+                        </div>
+                      ) : (
+                        alerts
+                          .filter((a) => a.severity === "error")
+                          .slice(0, 5)
+                          .map((alert, idx) => (
+                            <div
+                              key={idx}
+                              className="p-3 cursor-pointer transition-colors hover:bg-slate-800"
+                              style={{
+                                borderBottom: "1px solid #1e293b",
+                                background: "#0a0f1a",
+                              }}
+                              onClick={() => {
+                                setShowNotifications(false);
+                                setSelectedTx(alert.id);
+                                setSelectedAlertData(alert);
+                              }}
+                            >
+                              <p className="text-sm text-white font-medium line-clamp-1">
+                                {alert.message}
+                              </p>
+                              <div className="flex justify-between items-center mt-1">
+                                <span className="text-xs text-slate-500">
+                                  {alert.timestamp}
+                                </span>
+                                <span className="text-xs font-mono text-red-400">
+                                  {formatINR(alert.amount)}
+                                </span>
+                              </div>
+                            </div>
+                          ))
+                      )}
+                    </div>
+                    {alerts.filter((a) => a.severity === "error").length >
+                      5 && (
+                      <div
+                        className="p-2"
+                        style={{
+                          borderTop: "1px solid #334155",
+                          background: "#0d1321",
+                        }}
+                      >
+                        <button
+                          onClick={() => {
+                            setShowNotifications(false);
+                            setActiveTab("transactions");
+                          }}
+                          className="w-full text-xs text-blue-400 hover:text-blue-300 transition-colors py-1"
+                        >
+                          View all{" "}
+                          {alerts.filter((a) => a.severity === "error").length}{" "}
+                          alerts →
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </>
               )}
-            </button>
+            </div>
 
             <div className="w-9 h-9 bg-gradient-to-tr from-blue-500 to-purple-600 rounded-xl border-2 border-slate-800 shadow-lg flex items-center justify-center">
               <span className="text-white font-bold text-sm">A</span>
@@ -1385,14 +2001,14 @@ const Dashboard = ({ token, logout }) => {
             <>
               {/* KPI CARDS */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                <div className="glass-card p-6 rounded-2xl border border-slate-700/50 shadow-xl card-hover group">
+                <div className="stat-card group">
                   <div className="flex justify-between items-start mb-4">
                     <div className="p-3 bg-gradient-to-br from-blue-500/20 to-cyan-500/10 rounded-xl group-hover:scale-110 transition-transform duration-300">
                       <TrendingUp className="text-blue-400 w-6 h-6" />
                     </div>
                     <div className="flex items-center gap-1.5">
                       <ArrowUpRight size={14} className="text-emerald-400" />
-                      <span className="text-xs font-bold text-emerald-400 bg-emerald-900/30 px-2 py-1 rounded-lg">
+                      <span className="text-xs font-bold text-emerald-400 bg-emerald-900/30 px-2.5 py-1 rounded-lg">
                         {stats.match_rate}% Match
                       </span>
                     </div>
@@ -1400,25 +2016,25 @@ const Dashboard = ({ token, logout }) => {
                   <h3 className="text-slate-400 text-sm font-medium mb-1">
                     Total Processed
                   </h3>
-                  <p className="text-4xl font-bold text-white mb-2 tracking-tight">
+                  <p className="text-4xl font-bold text-white mb-3 tracking-tight">
                     {stats.total_processed.toLocaleString()}
                   </p>
                   <div className="flex items-center gap-2 text-xs text-slate-500">
-                    <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 rounded-md">
+                    <span className="px-2 py-1 bg-emerald-500/10 text-emerald-400 rounded-md">
                       {stats.total_matched} matched
                     </span>
-                    <span className="px-2 py-0.5 bg-blue-500/10 text-blue-400 rounded-md">
+                    <span className="px-2 py-1 bg-blue-500/10 text-blue-400 rounded-md">
                       {stats.total_auto_resolved} auto-fixed
                     </span>
                   </div>
                 </div>
 
-                <div className="glass-card p-6 rounded-2xl border border-slate-700/50 shadow-xl card-hover group">
+                <div className="stat-card group">
                   <div className="flex justify-between items-start mb-4">
                     <div className="p-3 bg-gradient-to-br from-red-500/20 to-orange-500/10 rounded-xl group-hover:scale-110 transition-transform duration-300">
                       <AlertOctagon className="text-red-400 w-6 h-6" />
                     </div>
-                    <span className="text-xs font-mono text-slate-400 bg-slate-800 px-2 py-1 rounded-lg border border-slate-700">
+                    <span className="text-xs font-mono text-slate-400 bg-slate-800 px-2.5 py-1 rounded-lg border border-slate-700">
                       Action Req.
                     </span>
                   </div>
@@ -1426,7 +2042,7 @@ const Dashboard = ({ token, logout }) => {
                     Critical Mismatches
                   </h3>
                   <p
-                    className={`text-4xl font-bold mb-2 tracking-tight ${
+                    className={`text-4xl font-bold mb-3 tracking-tight ${
                       stats.total_issues > 0
                         ? "text-red-400 neon-text-red"
                         : "text-white"
@@ -1434,7 +2050,7 @@ const Dashboard = ({ token, logout }) => {
                   >
                     {stats.total_issues}
                   </p>
-                  <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                  <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
                     <div
                       className="h-full bg-gradient-to-r from-red-500 to-orange-500 rounded-full transition-all duration-500"
                       style={{
@@ -1450,19 +2066,19 @@ const Dashboard = ({ token, logout }) => {
                   </div>
                 </div>
 
-                <div className="glass-card p-6 rounded-2xl border border-slate-700/50 shadow-xl card-hover group">
+                <div className="stat-card group">
                   <div className="flex justify-between items-start mb-4">
                     <div className="p-3 bg-gradient-to-br from-emerald-500/20 to-teal-500/10 rounded-xl group-hover:scale-110 transition-transform duration-300">
                       <Zap className="text-emerald-400 w-6 h-6" />
                     </div>
-                    <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 px-2 py-1 rounded-lg border border-emerald-500/30 animate-pulse">
+                    <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/30 animate-pulse">
                       LIVE
                     </span>
                   </div>
                   <h3 className="text-slate-400 text-sm font-medium mb-1">
                     Velocity (TPM)
                   </h3>
-                  <p className="text-4xl font-bold text-white mb-2 tracking-tight">
+                  <p className="text-4xl font-bold text-white mb-3 tracking-tight">
                     {stats.tpm}
                   </p>
                   <div className="flex items-center gap-2 text-xs text-slate-500">
@@ -1476,14 +2092,14 @@ const Dashboard = ({ token, logout }) => {
                   </div>
                 </div>
 
-                <div className="glass-card p-6 rounded-2xl border border-slate-700/50 shadow-xl card-hover group relative overflow-hidden">
+                <div className="stat-card group relative overflow-hidden">
                   <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-purple-500/10 to-pink-500/10 rounded-full blur-2xl -translate-y-1/2 translate-x-1/2"></div>
                   <div className="relative">
                     <div className="flex justify-between items-start mb-4">
                       <div className="p-3 bg-gradient-to-br from-purple-500/20 to-pink-500/10 rounded-xl group-hover:scale-110 transition-transform duration-300">
-                        <IndianRupee className="text-purple-400 w-6 h-6" />
+                        <Banknote className="text-purple-400 w-6 h-6" />
                       </div>
-                      <span className="text-xs font-bold text-red-400 bg-red-500/10 px-2 py-1 rounded-lg border border-red-500/30 flex items-center gap-1.5">
+                      <span className="text-xs font-bold text-red-400 bg-red-500/10 px-2.5 py-1 rounded-lg border border-red-500/30 flex items-center gap-1.5">
                         <span className="w-1.5 h-1.5 bg-red-400 rounded-full animate-pulse"></span>
                         LIVE RISK
                       </span>
@@ -1491,8 +2107,15 @@ const Dashboard = ({ token, logout }) => {
                     <h3 className="text-slate-400 text-sm font-medium mb-1">
                       Money at Risk
                     </h3>
-                    <p className="text-4xl font-bold text-white mb-2 tracking-tight">
-                      {formatINR(riskAmount)}
+                    <p className="text-4xl font-bold text-white mb-3 tracking-tight">
+                      $
+                      {riskAmount.toLocaleString("en-US", {
+                        minimumFractionDigits: 0,
+                        maximumFractionDigits: 0,
+                      })}
+                    </p>
+                    <p className="text-xs text-slate-500 mb-2">
+                      Estimated in USD equivalent
                     </p>
                     <div className="flex items-center gap-2 text-xs">
                       {riskAmount > 0 ? (
@@ -1509,9 +2132,13 @@ const Dashboard = ({ token, logout }) => {
                 </div>
               </div>
 
+              {/* ROW: Chart + Live Feed - Fixed heights for consistent layout */}
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                {/* MAIN CHART SECTION */}
-                <div className="lg:col-span-2 bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg p-6 backdrop-blur-sm flex flex-col">
+                {/* MAIN CHART SECTION - Fixed height */}
+                <div
+                  className="lg:col-span-2 pro-card p-6"
+                  style={{ height: "420px" }}
+                >
                   <div className="flex justify-between items-center mb-6">
                     <h3 className="font-bold text-lg text-white flex items-center gap-2">
                       <Activity size={18} className="text-blue-400" />
@@ -1642,229 +2269,131 @@ const Dashboard = ({ token, logout }) => {
                   </div>
                 </div>
 
-                {/* LIVE FEED SECTION */}
+                {/* LIVE FEED SECTION - Fixed height to match chart */}
                 <div
-                  className="bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg backdrop-blur-sm flex flex-col"
-                  style={{ height: "450px" }}
+                  className="pro-card flex flex-col overflow-hidden"
+                  style={{ height: "420px" }}
                 >
                   <div className="p-4 border-b border-slate-700/50 flex justify-between items-center flex-shrink-0">
                     <h3 className="font-bold text-white flex items-center gap-2">
                       <AlertTriangle size={18} className="text-amber-400" />
                       Live Incident Feed
                     </h3>
-                    <span className="text-xs bg-slate-700 text-slate-300 px-2 py-1 rounded-full">
-                      {alerts.length} Events
-                    </span>
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></span>
+                        <span className="text-[10px] text-slate-400">LIVE</span>
+                      </div>
+                      <span className="text-xs bg-slate-700/50 text-slate-300 px-2.5 py-1 rounded-full">
+                        {alerts.length} Events
+                      </span>
+                    </div>
                   </div>
 
-                  <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar relative">
+                  <div className="flex-1 overflow-y-auto p-3 space-y-2 main-scroll">
                     {alerts.length === 0 ? (
-                      <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 opacity-50">
-                        <CheckCircle size={48} className="mb-2" />
-                        <p>All Systems Nominal</p>
+                      <div className="h-full flex flex-col items-center justify-center text-slate-500">
+                        <CheckCircle size={48} className="mb-3 opacity-50" />
+                        <p className="text-lg font-medium">
+                          All Systems Nominal
+                        </p>
+                        <p className="text-sm text-slate-600 mt-1">
+                          Waiting for transactions...
+                        </p>
                       </div>
                     ) : (
-                      alerts.map((alert, idx) => (
+                      alerts.slice(0, 15).map((alert, idx) => (
                         <div
-                          key={idx}
-                          className={`p-3 rounded-lg border animate-fade-in ${getSeverityColor(
+                          key={alert.id || idx}
+                          className={`p-3 rounded-lg border animate-fade-in transition-all cursor-pointer hover:brightness-110 ${getSeverityColor(
                             alert.severity
                           )}`}
+                          onClick={() => {
+                            if (alert.ai) {
+                              setAiDrawerAlert(alert);
+                            } else {
+                              setSelectedTx(alert.id);
+                              setSelectedAlertData(alert);
+                            }
+                          }}
                         >
-                          <div className="flex items-start gap-3">
-                            <div className="mt-1">
+                          <div className="flex items-center gap-2">
+                            {/* Severity Icon */}
+                            <div className="flex-shrink-0">
                               {alert.severity === "error" && (
-                                <AlertOctagon size={16} />
+                                <AlertOctagon
+                                  size={14}
+                                  className="text-red-400"
+                                />
                               )}
                               {alert.severity === "warning" && (
-                                <AlertTriangle size={16} />
+                                <AlertTriangle
+                                  size={14}
+                                  className="text-amber-400"
+                                />
                               )}
                               {alert.severity === "success" && (
-                                <CheckCircle size={16} />
+                                <CheckCircle
+                                  size={14}
+                                  className="text-emerald-400"
+                                />
                               )}
                             </div>
+
+                            {/* Main Content */}
                             <div className="flex-1 min-w-0">
-                              <div className="flex justify-between items-start gap-2">
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex items-center gap-2 flex-wrap">
-                                    {alert.message.includes(
-                                      "AUTO-MITIGATED"
-                                    ) && (
-                                      <span className="bg-blue-500/20 text-blue-400 text-[10px] px-1.5 py-0.5 rounded border border-blue-500/30 uppercase tracking-wider">
-                                        Auto-Fixed
-                                      </span>
-                                    )}
-                                    {alert.ai && <AIBadge ai={alert.ai} />}
-                                  </div>
-                                  <p className="font-semibold text-sm truncate mt-1">
-                                    {alert.message}
-                                  </p>
-                                </div>
-                                <span className="text-[10px] opacity-70 whitespace-nowrap">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="font-medium text-xs text-white truncate">
+                                  {alert.message.length > 50
+                                    ? alert.message.substring(0, 50) + "..."
+                                    : alert.message}
+                                </p>
+                                <span className="text-[10px] text-slate-500 whitespace-nowrap flex-shrink-0">
                                   {alert.timestamp}
                                 </span>
                               </div>
 
-                              {/* AI Analysis Preview */}
-                              {alert.ai && alert.ai.analysis && (
-                                <div className="mt-2">
-                                  <button
-                                    onClick={() =>
-                                      setExpandedAlertAI(
-                                        expandedAlertAI === idx ? null : idx
-                                      )
-                                    }
-                                    className="w-full text-left"
+                              {/* Quick Info Row */}
+                              <div className="flex items-center gap-2 mt-1">
+                                {/* Country Flag */}
+                                {alert.country && (
+                                  <span
+                                    className="text-xs"
+                                    title={alert.country}
                                   >
-                                    <div
-                                      className={`p-2.5 rounded-lg border transition-all ${
-                                        alert.ai.ok === false
-                                          ? "bg-red-500/10 border-red-500/20"
-                                          : "bg-blue-500/10 border-blue-500/20 hover:border-blue-500/40"
-                                      }`}
-                                    >
-                                      <div className="flex items-center gap-2 mb-1">
-                                        <Brain
-                                          size={12}
-                                          className={
-                                            alert.ai.ok === false
-                                              ? "text-red-400"
-                                              : "text-blue-400"
-                                          }
-                                        />
-                                        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                                          AI Analysis
-                                        </span>
-                                        {alert.ai.content_safety?.enabled && (
-                                          <span
-                                            className={`text-[9px] px-1.5 py-0.5 rounded ${
-                                              alert.ai.content_safety
-                                                .allowed === false
-                                                ? "bg-red-500/20 text-red-400"
-                                                : "bg-emerald-500/20 text-emerald-400"
-                                            }`}
-                                          >
-                                            {alert.ai.content_safety.allowed ===
-                                            false
-                                              ? "BLOCKED"
-                                              : "SAFE"}
-                                          </span>
-                                        )}
-                                        <span className="ml-auto">
-                                          {expandedAlertAI === idx ? (
-                                            <ChevronUp
-                                              size={12}
-                                              className="text-slate-500"
-                                            />
-                                          ) : (
-                                            <ChevronDown
-                                              size={12}
-                                              className="text-slate-500"
-                                            />
-                                          )}
-                                        </span>
-                                      </div>
-                                      <p
-                                        className={`text-xs leading-relaxed ${
-                                          expandedAlertAI === idx
-                                            ? ""
-                                            : "line-clamp-2"
-                                        } ${
-                                          alert.ai.ok === false
-                                            ? "text-red-300/80"
-                                            : "text-slate-300"
-                                        }`}
-                                      >
-                                        {alert.ai.analysis}
-                                      </p>
-                                      {expandedAlertAI === idx &&
-                                        alert.ai.raw && (
-                                          <div className="mt-2 pt-2 border-t border-slate-700/50 space-y-1.5">
-                                            {alert.ai.raw.severity && (
-                                              <div className="flex items-center justify-between">
-                                                <span className="text-[10px] text-slate-500">
-                                                  Severity
-                                                </span>
-                                                <span
-                                                  className={`text-[10px] font-bold uppercase ${
-                                                    alert.ai.raw.severity ===
-                                                    "critical"
-                                                      ? "text-red-400"
-                                                      : alert.ai.raw
-                                                          .severity === "high"
-                                                      ? "text-orange-400"
-                                                      : alert.ai.raw
-                                                          .severity === "medium"
-                                                      ? "text-amber-400"
-                                                      : "text-emerald-400"
-                                                  }`}
-                                                >
-                                                  {alert.ai.raw.severity}
-                                                </span>
-                                              </div>
-                                            )}
-                                            {alert.ai.raw.confidence !==
-                                              undefined && (
-                                              <div className="flex items-center justify-between">
-                                                <span className="text-[10px] text-slate-500">
-                                                  Confidence
-                                                </span>
-                                                <span className="text-[10px] font-mono text-slate-300">
-                                                  {Math.round(
-                                                    alert.ai.raw.confidence *
-                                                      100
-                                                  )}
-                                                  %
-                                                </span>
-                                              </div>
-                                            )}
-                                            {alert.ai.raw
-                                              .recommended_action && (
-                                              <div className="mt-1.5">
-                                                <span className="text-[10px] text-slate-500 block">
-                                                  Recommended
-                                                </span>
-                                                <span className="text-[10px] text-white">
-                                                  {
-                                                    alert.ai.raw
-                                                      .recommended_action
-                                                  }
-                                                </span>
-                                              </div>
-                                            )}
-                                          </div>
-                                        )}
-                                    </div>
-                                  </button>
-                                </div>
-                              )}
+                                    {getCountryFlag(alert.country)}
+                                  </span>
+                                )}
 
-                              {/* Legacy analysis display for old format */}
-                              {!alert.ai && alert.analysis && (
-                                <p className="text-xs mt-1 italic opacity-80 border-l-2 border-current pl-2">
-                                  🤖 AI: {alert.analysis}
-                                </p>
-                              )}
+                                {/* Amount with Currency */}
+                                <span className="text-[10px] font-mono text-slate-300">
+                                  {formatCurrency(
+                                    alert.amount,
+                                    alert.currency || "INR"
+                                  )}
+                                </span>
 
-                              <div className="flex justify-between items-center mt-2">
-                                <p className="text-xs font-mono opacity-80 truncate">
-                                  ID: {alert.id?.slice(0, 12)}...
-                                </p>
-                                <div className="flex items-center gap-2">
-                                  <p className="text-xs font-bold opacity-90">
-                                    {formatINR(alert.amount)}
-                                  </p>
-                                  <button
-                                    onClick={() => {
-                                      setSelectedTx(alert.id);
-                                      setSelectedAlertData(alert);
-                                    }}
-                                    className="p-1 rounded hover:bg-white/10 transition-colors"
-                                    title="View Details"
-                                  >
-                                    <Eye size={12} className="text-slate-400" />
-                                  </button>
-                                </div>
+                                {/* AI Badge */}
+                                {alert.ai && (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium bg-blue-500/20 text-blue-400 border border-blue-500/30">
+                                    <Brain size={8} />
+                                    AI
+                                  </span>
+                                )}
+
+                                {/* Auto-Fixed Badge */}
+                                {alert.message.includes("AUTO-MITIGATED") && (
+                                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                    AUTO
+                                  </span>
+                                )}
+
+                                {/* Click hint */}
+                                <span className="ml-auto text-[9px] text-blue-400 opacity-60">
+                                  {alert.ai
+                                    ? "Click for AI →"
+                                    : "Click to view →"}
+                                </span>
                               </div>
                             </div>
                           </div>
@@ -1876,7 +2405,7 @@ const Dashboard = ({ token, logout }) => {
               </div>
 
               {/* HEATMAP SECTION */}
-              <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg p-6 backdrop-blur-sm mt-6">
+              <div className="pro-card p-6 mt-8">
                 <div className="flex justify-between items-center mb-6">
                   <h3 className="font-bold text-lg text-white flex items-center gap-2">
                     <AlertOctagon size={18} className="text-red-400" />
@@ -1949,18 +2478,18 @@ const Dashboard = ({ token, logout }) => {
               </div>
 
               {/* GEO RISK & MISMATCH TYPES ROW */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-8">
                 {/* Geographic Risk */}
-                <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg p-6 backdrop-blur-sm">
+                <div className="pro-card p-6">
                   <h3 className="font-bold text-lg text-white flex items-center gap-2 mb-4">
                     <Globe size={18} className="text-cyan-400" />
                     Geographic Risk Analysis
                   </h3>
-                  <div className="space-y-3 max-h-64 overflow-y-auto custom-scrollbar">
+                  <div className="space-y-3 max-h-72 overflow-y-auto main-scroll pr-2">
                     {geoRiskData.slice(0, 10).map((geo, idx) => (
                       <div
                         key={idx}
-                        className="flex items-center justify-between p-3 bg-slate-900/50 rounded-lg"
+                        className="flex items-center justify-between p-4 bg-slate-900/50 rounded-xl border border-slate-700/30 hover:border-slate-600/50 transition-colors"
                       >
                         <div className="flex items-center gap-3">
                           <span className="text-2xl">
@@ -1977,7 +2506,7 @@ const Dashboard = ({ token, logout }) => {
                         </div>
                         <div className="text-right">
                           <p
-                            className={`font-bold ${
+                            className={`font-bold text-lg ${
                               geo.risk_rate > 20
                                 ? "text-red-400"
                                 : geo.risk_rate > 10
@@ -1994,7 +2523,7 @@ const Dashboard = ({ token, logout }) => {
                       </div>
                     ))}
                     {geoRiskData.length === 0 && (
-                      <p className="text-center text-slate-500 py-4">
+                      <p className="text-center text-slate-500 py-8">
                         Collecting geographic data...
                       </p>
                     )}
@@ -2002,7 +2531,7 @@ const Dashboard = ({ token, logout }) => {
                 </div>
 
                 {/* Mismatch Types Breakdown */}
-                <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg p-6 backdrop-blur-sm">
+                <div className="pro-card p-6">
                   <h3 className="font-bold text-lg text-white flex items-center gap-2 mb-4">
                     <Activity size={18} className="text-purple-400" />
                     Mismatch Type Breakdown
@@ -2054,19 +2583,23 @@ const Dashboard = ({ token, logout }) => {
               </div>
 
               {/* RECENT TRANSACTIONS TABLE */}
-              <div className="mt-8 bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg backdrop-blur-sm overflow-hidden">
+              <div className="mt-8 pro-card overflow-hidden">
                 <div className="p-6 border-b border-slate-700/50 flex justify-between items-center">
-                  <h3 className="font-bold text-lg text-white">
+                  <h3 className="font-bold text-lg text-white flex items-center gap-2">
+                    <FileText size={18} className="text-blue-400" />
                     Recent Audit Logs
                   </h3>
                   <div className="flex gap-4">
                     <button
                       onClick={downloadReport}
-                      className="text-sm text-emerald-400 hover:text-emerald-300 transition-colors flex items-center gap-2"
+                      className="text-sm text-emerald-400 hover:text-emerald-300 transition-colors flex items-center gap-2 px-3 py-1.5 rounded-lg border border-emerald-500/30 hover:bg-emerald-500/10"
                     >
-                      <FileText size={16} /> Download Report
+                      <FileText size={14} /> Download Report
                     </button>
-                    <button className="text-sm text-blue-400 hover:text-blue-300 transition-colors">
+                    <button
+                      onClick={() => setActiveTab("transactions")}
+                      className="text-sm text-blue-400 hover:text-blue-300 transition-colors px-3 py-1.5 rounded-lg border border-blue-500/30 hover:bg-blue-500/10"
+                    >
                       View All History
                     </button>
                   </div>
@@ -2198,19 +2731,317 @@ const Dashboard = ({ token, logout }) => {
             />
           )}
 
+          {/* AI Analysis Drawer */}
+          {aiDrawerAlert && (
+            <AIDrawer
+              alert={aiDrawerAlert}
+              onClose={() => setAiDrawerAlert(null)}
+              onViewTransaction={(txId, alertData) => {
+                setSelectedTx(txId);
+                setSelectedAlertData(alertData);
+              }}
+            />
+          )}
+
+          {/* AI INSIGHTS TAB */}
+          {activeTab === "ai-insights" && (
+            <div className="space-y-6">
+              {/* AI Stats Overview */}
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                <div className="stat-card">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="p-3 rounded-xl bg-gradient-to-br from-purple-500/20 to-pink-500/10">
+                      <Brain className="text-purple-400 w-6 h-6" />
+                    </div>
+                    <span className="text-xs font-mono text-purple-400 bg-purple-500/10 px-2 py-1 rounded-lg border border-purple-500/30">
+                      AZURE AI
+                    </span>
+                  </div>
+                  <h3 className="text-slate-400 text-sm font-medium mb-1">
+                    AI Analyses
+                  </h3>
+                  <p className="text-4xl font-bold text-white tracking-tight">
+                    {alerts.filter((a) => a.ai).length}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-2">
+                    Total insights generated
+                  </p>
+                </div>
+
+                <div className="stat-card">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="p-3 rounded-xl bg-gradient-to-br from-emerald-500/20 to-teal-500/10">
+                      <ShieldCheck className="text-emerald-400 w-6 h-6" />
+                    </div>
+                  </div>
+                  <h3 className="text-slate-400 text-sm font-medium mb-1">
+                    Safe Content
+                  </h3>
+                  <p className="text-4xl font-bold text-emerald-400 tracking-tight">
+                    {
+                      alerts.filter(
+                        (a) => a.ai?.content_safety?.allowed !== false
+                      ).length
+                    }
+                  </p>
+                  <p className="text-xs text-slate-500 mt-2">
+                    Passed safety checks
+                  </p>
+                </div>
+
+                <div className="stat-card">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="p-3 rounded-xl bg-gradient-to-br from-red-500/20 to-orange-500/10">
+                      <ShieldAlert className="text-red-400 w-6 h-6" />
+                    </div>
+                  </div>
+                  <h3 className="text-slate-400 text-sm font-medium mb-1">
+                    Blocked
+                  </h3>
+                  <p className="text-4xl font-bold text-red-400 tracking-tight">
+                    {
+                      alerts.filter(
+                        (a) => a.ai?.content_safety?.allowed === false
+                      ).length
+                    }
+                  </p>
+                  <p className="text-xs text-slate-500 mt-2">
+                    Failed safety checks
+                  </p>
+                </div>
+
+                <div className="stat-card">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="p-3 rounded-xl bg-gradient-to-br from-blue-500/20 to-cyan-500/10">
+                      <Target className="text-blue-400 w-6 h-6" />
+                    </div>
+                  </div>
+                  <h3 className="text-slate-400 text-sm font-medium mb-1">
+                    Avg Confidence
+                  </h3>
+                  <p className="text-4xl font-bold text-blue-400 tracking-tight">
+                    {alerts.filter((a) => a.ai?.raw?.confidence).length > 0
+                      ? Math.round(
+                          (alerts
+                            .filter((a) => a.ai?.raw?.confidence)
+                            .reduce((sum, a) => sum + a.ai.raw.confidence, 0) /
+                            alerts.filter((a) => a.ai?.raw?.confidence)
+                              .length) *
+                            100
+                        )
+                      : 0}
+                    %
+                  </p>
+                  <p className="text-xs text-slate-500 mt-2">
+                    AI confidence score
+                  </p>
+                </div>
+              </div>
+
+              {/* AI Analysis Feed */}
+              <div className="pro-card">
+                <div className="p-6 border-b border-slate-700/50 flex justify-between items-center">
+                  <h3 className="font-bold text-lg text-white flex items-center gap-3">
+                    <Brain className="text-purple-400" />
+                    AI Analysis Feed
+                    <Sparkles size={16} className="text-purple-400" />
+                  </h3>
+                  <div className="flex gap-2">
+                    <span className="px-3 py-1.5 bg-purple-500/10 text-purple-400 rounded-lg text-xs font-medium border border-purple-500/30">
+                      {alerts.filter((a) => a.ai).length} Insights
+                    </span>
+                  </div>
+                </div>
+
+                <div className="divide-y divide-slate-700/30">
+                  {alerts.filter((a) => a.ai).length === 0 ? (
+                    <div className="p-12 text-center">
+                      <Brain
+                        size={48}
+                        className="text-slate-600 mx-auto mb-4"
+                      />
+                      <h4 className="text-lg font-medium text-slate-400 mb-2">
+                        No AI Insights Yet
+                      </h4>
+                      <p className="text-sm text-slate-500">
+                        AI analysis will appear here as transactions are
+                        processed.
+                      </p>
+                    </div>
+                  ) : (
+                    alerts
+                      .filter((a) => a.ai)
+                      .slice(0, 20)
+                      .map((alert, idx) => (
+                        <div
+                          key={idx}
+                          className="p-6 hover:bg-slate-800/30 transition-colors cursor-pointer"
+                          onClick={() => setAiDrawerAlert(alert)}
+                        >
+                          <div className="flex gap-5">
+                            {/* AI Avatar */}
+                            <div className="flex-shrink-0">
+                              <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg shadow-purple-900/20">
+                                <Bot size={24} className="text-white" />
+                              </div>
+                            </div>
+
+                            {/* Content */}
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-3 mb-2">
+                                <span className="font-semibold text-white">
+                                  AI Analysis
+                                </span>
+                                <span className="text-xs text-slate-500">
+                                  {alert.timestamp}
+                                </span>
+                                {alert.ai.ok ? (
+                                  <span className="px-2 py-0.5 text-[10px] font-medium bg-emerald-500/20 text-emerald-400 rounded-full border border-emerald-500/30">
+                                    SUCCESS
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 text-[10px] font-medium bg-red-500/20 text-red-400 rounded-full border border-red-500/30">
+                                    ERROR
+                                  </span>
+                                )}
+                                {alert.ai.content_safety?.enabled && (
+                                  <ContentSafetyBadge
+                                    safety={alert.ai.content_safety}
+                                  />
+                                )}
+                              </div>
+
+                              {/* Analysis Text */}
+                              <p className="text-sm text-slate-300 leading-relaxed mb-3 line-clamp-3">
+                                {alert.ai.analysis}
+                              </p>
+
+                              {/* Metadata */}
+                              <div className="flex items-center gap-4 text-xs">
+                                <span className="text-slate-500">
+                                  Transaction:{" "}
+                                  <span className="font-mono text-slate-400">
+                                    {alert.id?.slice(0, 12)}...
+                                  </span>
+                                </span>
+                                <span className="text-slate-500">
+                                  Amount:{" "}
+                                  <span className="font-bold text-white">
+                                    {formatINR(alert.amount)}
+                                  </span>
+                                </span>
+                                {alert.ai.raw?.severity && (
+                                  <span
+                                    className={`px-2 py-0.5 rounded font-bold uppercase ${
+                                      alert.ai.raw.severity === "critical"
+                                        ? "bg-red-500/20 text-red-400"
+                                        : alert.ai.raw.severity === "high"
+                                        ? "bg-orange-500/20 text-orange-400"
+                                        : alert.ai.raw.severity === "medium"
+                                        ? "bg-amber-500/20 text-amber-400"
+                                        : "bg-emerald-500/20 text-emerald-400"
+                                    }`}
+                                  >
+                                    {alert.ai.raw.severity}
+                                  </span>
+                                )}
+                                {alert.ai.raw?.confidence !== undefined && (
+                                  <span className="text-slate-500">
+                                    Confidence:{" "}
+                                    <span className="font-mono text-blue-400">
+                                      {Math.round(
+                                        alert.ai.raw.confidence * 100
+                                      )}
+                                      %
+                                    </span>
+                                  </span>
+                                )}
+                                <button
+                                  className="ml-auto flex items-center gap-1 text-blue-400 hover:text-blue-300 transition-colors"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setAiDrawerAlert(alert);
+                                  }}
+                                >
+                                  <Maximize2 size={12} />
+                                  View Full Analysis
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* TRANSACTIONS TAB */}
           {activeTab === "transactions" && (
-            <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg backdrop-blur-sm overflow-hidden">
-              <div className="p-6 border-b border-slate-700/50 flex justify-between items-center">
-                <h3 className="font-bold text-lg text-white">
+            <div className="pro-card overflow-hidden">
+              <div className="p-6 border-b border-slate-700/50 flex justify-between items-center flex-wrap gap-4">
+                <h3 className="font-bold text-lg text-white flex items-center gap-2">
+                  <FileText size={18} className="text-blue-400" />
                   Transaction Management
+                  <span className="text-xs bg-slate-700 text-slate-300 px-2 py-1 rounded-full">
+                    {
+                      alerts.filter((a) =>
+                        txFilter === "all"
+                          ? true
+                          : txFilter === "errors"
+                          ? a.severity === "error"
+                          : txFilter === "warnings"
+                          ? a.severity === "warning"
+                          : a.severity === "success"
+                      ).length
+                    }{" "}
+                    transactions
+                  </span>
                 </h3>
-                <div className="flex gap-2">
-                  <button className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-lg text-xs font-medium text-slate-300 transition-colors">
-                    Filter: All
+                <div className="flex gap-2 flex-wrap">
+                  <button
+                    onClick={() => setTxFilter("all")}
+                    className={`px-4 py-2 rounded-xl text-xs font-medium transition-colors border ${
+                      txFilter === "all"
+                        ? "bg-blue-500/20 text-blue-400 border-blue-500/30"
+                        : "bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700"
+                    }`}
+                  >
+                    All
                   </button>
-                  <button className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-lg text-xs font-medium text-red-400 transition-colors">
-                    Errors Only
+                  <button
+                    onClick={() => setTxFilter("errors")}
+                    className={`px-4 py-2 rounded-xl text-xs font-medium transition-colors border ${
+                      txFilter === "errors"
+                        ? "bg-red-500/20 text-red-400 border-red-500/30"
+                        : "bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700"
+                    }`}
+                  >
+                    Errors (
+                    {alerts.filter((a) => a.severity === "error").length})
+                  </button>
+                  <button
+                    onClick={() => setTxFilter("warnings")}
+                    className={`px-4 py-2 rounded-xl text-xs font-medium transition-colors border ${
+                      txFilter === "warnings"
+                        ? "bg-amber-500/20 text-amber-400 border-amber-500/30"
+                        : "bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700"
+                    }`}
+                  >
+                    Warnings (
+                    {alerts.filter((a) => a.severity === "warning").length})
+                  </button>
+                  <button
+                    onClick={() => setTxFilter("success")}
+                    className={`px-4 py-2 rounded-xl text-xs font-medium transition-colors border ${
+                      txFilter === "success"
+                        ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
+                        : "bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700"
+                    }`}
+                  >
+                    Matched (
+                    {alerts.filter((a) => a.severity === "success").length})
                   </button>
                 </div>
               </div>
@@ -2219,64 +3050,121 @@ const Dashboard = ({ token, logout }) => {
                   <thead className="bg-slate-900/50 text-slate-400 uppercase text-xs font-semibold tracking-wider">
                     <tr>
                       <th className="p-4">Status</th>
-                      <th className="p-4">ID</th>
+                      <th className="p-4">Transaction ID</th>
                       <th className="p-4">Details</th>
                       <th className="p-4">Amount</th>
+                      <th className="p-4">Country</th>
                       <th className="p-4">Time</th>
                       <th className="p-4 text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-700/50">
-                    {alerts.map((alert, idx) => (
-                      <tr
-                        key={idx}
-                        className="hover:bg-slate-700/30 transition-colors"
-                      >
-                        <td className="p-4">
-                          <span
-                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${getSeverityColor(
-                              alert.severity
-                            )}`}
-                          >
-                            {alert.severity.toUpperCase()}
-                          </span>
-                        </td>
-                        <td className="p-4 font-mono text-slate-300">
-                          {alert.id}
-                        </td>
-                        <td className="p-4 text-slate-300 max-w-xs truncate">
-                          {alert.message}
-                        </td>
-                        <td className="p-4 font-mono font-medium text-white">
-                          ${alert.amount}
-                        </td>
-                        <td className="p-4 text-slate-400">
-                          {alert.timestamp}
-                        </td>
-                        <td className="p-4 text-right flex justify-end gap-2">
-                          {alert.severity === "error" && (
-                            <>
-                              <button
-                                onClick={() =>
-                                  handleResolve(alert.id, "resolve")
-                                }
-                                className="px-3 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 rounded text-xs transition-colors"
-                              >
-                                Resolve
-                              </button>
-                              <button
-                                onClick={() =>
-                                  handleResolve(alert.id, "ignore")
-                                }
-                                className="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded text-xs transition-colors"
-                              >
-                                Ignore
-                              </button>
-                            </>
-                          )}
+                    {alerts
+                      .filter((a) =>
+                        txFilter === "all"
+                          ? true
+                          : txFilter === "errors"
+                          ? a.severity === "error"
+                          : txFilter === "warnings"
+                          ? a.severity === "warning"
+                          : a.severity === "success"
+                      )
+                      .map((alert, idx) => (
+                        <tr
+                          key={alert.id || idx}
+                          className="hover:bg-slate-700/30 transition-colors cursor-pointer"
+                          onClick={() => {
+                            setSelectedTx(alert.id);
+                            setSelectedAlertData(alert);
+                          }}
+                        >
+                          <td className="p-4">
+                            <span
+                              className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${getSeverityColor(
+                                alert.severity
+                              )}`}
+                            >
+                              {alert.severity === "error"
+                                ? "CRITICAL"
+                                : alert.severity === "warning"
+                                ? "WARNING"
+                                : "MATCHED"}
+                            </span>
+                          </td>
+                          <td className="p-4 font-mono text-slate-300">
+                            {alert.id ? `${alert.id.slice(0, 12)}...` : "N/A"}
+                          </td>
+                          <td className="p-4 text-slate-300 max-w-xs truncate">
+                            {alert.message}
+                          </td>
+                          <td className="p-4 font-mono font-medium text-white">
+                            {formatCurrency(
+                              alert.amount,
+                              alert.currency || "INR"
+                            )}
+                          </td>
+                          <td className="p-4 text-slate-300">
+                            {getCountryFlag(alert.country)}{" "}
+                            {alert.country || "N/A"}
+                          </td>
+                          <td className="p-4 text-slate-400">
+                            {alert.timestamp}
+                          </td>
+                          <td className="p-4 text-right">
+                            <div
+                              className="flex justify-end gap-2"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {alert.ai && (
+                                <button
+                                  onClick={() => setAiDrawerAlert(alert)}
+                                  className="px-3 py-1 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/20 rounded text-xs transition-colors flex items-center gap-1"
+                                >
+                                  <Brain size={12} /> AI
+                                </button>
+                              )}
+                              {alert.severity === "error" && (
+                                <>
+                                  <button
+                                    onClick={() =>
+                                      handleResolve(alert.id, "resolve")
+                                    }
+                                    className="px-3 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 rounded text-xs transition-colors"
+                                  >
+                                    Resolve
+                                  </button>
+                                  <button
+                                    onClick={() =>
+                                      handleResolve(alert.id, "ignore")
+                                    }
+                                    className="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded text-xs transition-colors"
+                                  >
+                                    Ignore
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    {alerts.filter((a) =>
+                      txFilter === "all"
+                        ? true
+                        : txFilter === "errors"
+                        ? a.severity === "error"
+                        : txFilter === "warnings"
+                        ? a.severity === "warning"
+                        : a.severity === "success"
+                    ).length === 0 && (
+                      <tr>
+                        <td
+                          colSpan="7"
+                          className="p-8 text-center text-slate-500"
+                        >
+                          No transactions match the selected filter
                         </td>
                       </tr>
-                    ))}
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -2285,15 +3173,17 @@ const Dashboard = ({ token, logout }) => {
 
           {/* SETTINGS TAB */}
           {activeTab === "settings" && (
-            <div className="max-w-2xl mx-auto space-y-6">
-              <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg p-6 backdrop-blur-sm">
-                <h3 className="font-bold text-lg text-white mb-4 flex items-center gap-2">
+            <div className="max-w-3xl mx-auto space-y-6">
+              <div className="pro-card p-6">
+                <h3 className="font-bold text-lg text-white mb-6 flex items-center gap-2">
                   <Shield className="text-blue-400" /> Mitigation Protocols
                 </h3>
 
-                <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-slate-700/50 mb-4">
+                <div className="flex items-center justify-between p-5 bg-slate-900/50 rounded-xl border border-slate-700/50 mb-4 hover:border-slate-600/50 transition-colors">
                   <div>
-                    <h4 className="font-medium text-white">Auto-Mitigation</h4>
+                    <h4 className="font-medium text-white mb-1">
+                      Auto-Mitigation
+                    </h4>
                     <p className="text-sm text-slate-400">
                       Automatically attempt to resolve discrepancies using AI
                       confidence scoring and 3-way consensus.
@@ -2301,12 +3191,12 @@ const Dashboard = ({ token, logout }) => {
                   </div>
                   <button
                     onClick={toggleAutoMitigation}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900 ${
+                    className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900 ${
                       settings.auto_mitigation ? "bg-blue-600" : "bg-slate-700"
                     }`}
                   >
                     <span
-                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform shadow-lg ${
                         settings.auto_mitigation
                           ? "translate-x-6"
                           : "translate-x-1"
@@ -2315,9 +3205,9 @@ const Dashboard = ({ token, logout }) => {
                   </button>
                 </div>
 
-                <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-slate-700/50 mb-4">
+                <div className="flex items-center justify-between p-5 bg-slate-900/50 rounded-xl border border-slate-700/50 mb-4 hover:border-slate-600/50 transition-colors">
                   <div>
-                    <h4 className="font-medium text-white flex items-center gap-2">
+                    <h4 className="font-medium text-white flex items-center gap-2 mb-1">
                       {settings.sound_alerts ? (
                         <Volume2 className="text-emerald-400" />
                       ) : (
@@ -2332,12 +3222,12 @@ const Dashboard = ({ token, logout }) => {
                   </div>
                   <button
                     onClick={toggleSoundAlerts}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900 ${
+                    className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-900 ${
                       settings.sound_alerts ? "bg-emerald-600" : "bg-slate-700"
                     }`}
                   >
                     <span
-                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform shadow-lg ${
                         settings.sound_alerts
                           ? "translate-x-6"
                           : "translate-x-1"
@@ -2346,10 +3236,10 @@ const Dashboard = ({ token, logout }) => {
                   </button>
                 </div>
 
-                <div className="p-4 bg-slate-900/50 rounded-lg border border-slate-700/50">
-                  <div className="flex justify-between mb-2">
+                <div className="p-5 bg-slate-900/50 rounded-xl border border-slate-700/50">
+                  <div className="flex justify-between mb-3">
                     <h4 className="font-medium text-white">Risk Threshold</h4>
-                    <span className="text-blue-400 font-mono">
+                    <span className="text-blue-400 font-mono text-lg">
                       {settings.risk_threshold}%
                     </span>
                   </div>
@@ -2366,26 +3256,26 @@ const Dashboard = ({ token, logout }) => {
                     }
                     className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
                   />
-                  <p className="text-sm text-slate-400 mt-2">
+                  <p className="text-sm text-slate-400 mt-3">
                     Transactions with a risk score above this threshold will
                     trigger an immediate halt and operator alert.
                   </p>
                 </div>
               </div>
 
-              <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg p-6 backdrop-blur-sm">
-                <h3 className="font-bold text-lg text-white mb-4 flex items-center gap-2">
+              <div className="pro-card p-6">
+                <h3 className="font-bold text-lg text-white mb-6 flex items-center gap-2">
                   <Zap className="text-amber-400" /> Chaos Producer Control
                 </h3>
 
                 {/* Start/Stop Button */}
-                <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-slate-700/50 mb-4">
+                <div className="flex items-center justify-between p-5 bg-slate-900/50 rounded-xl border border-slate-700/50 mb-4 hover:border-slate-600/50 transition-colors">
                   <div>
-                    <h4 className="font-medium text-white flex items-center gap-2">
+                    <h4 className="font-medium text-white flex items-center gap-2 mb-1">
                       {chaosControl.running ? (
-                        <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></span>
+                        <span className="w-2.5 h-2.5 bg-emerald-400 rounded-full animate-pulse"></span>
                       ) : (
-                        <span className="w-2 h-2 bg-slate-500 rounded-full"></span>
+                        <span className="w-2.5 h-2.5 bg-slate-500 rounded-full"></span>
                       )}
                       Transaction Generator
                     </h4>
@@ -2397,7 +3287,7 @@ const Dashboard = ({ token, logout }) => {
                   </div>
                   <button
                     onClick={toggleChaos}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all ${
+                    className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-medium transition-all ${
                       chaosControl.running
                         ? "bg-red-500/20 text-red-400 hover:bg-red-500/30 border border-red-500/50"
                         : "bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 border border-emerald-500/50"
@@ -2416,13 +3306,13 @@ const Dashboard = ({ token, logout }) => {
                 </div>
 
                 {/* Speed Control */}
-                <div className="p-4 bg-slate-900/50 rounded-lg border border-slate-700/50 mb-4">
-                  <div className="flex justify-between mb-2">
+                <div className="p-5 bg-slate-900/50 rounded-xl border border-slate-700/50 mb-4">
+                  <div className="flex justify-between mb-3">
                     <h4 className="font-medium text-white flex items-center gap-2">
                       <Gauge size={16} className="text-blue-400" />
                       Speed (TPS)
                     </h4>
-                    <span className="text-blue-400 font-mono">
+                    <span className="text-blue-400 font-mono text-lg">
                       {chaosControl.speed}x
                     </span>
                   </div>
@@ -2437,20 +3327,20 @@ const Dashboard = ({ token, logout }) => {
                     }
                     className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
                   />
-                  <div className="flex justify-between text-xs text-slate-500 mt-1">
+                  <div className="flex justify-between text-xs text-slate-500 mt-2">
                     <span>0.5x (Slow)</span>
                     <span>10x (Fast)</span>
                   </div>
                 </div>
 
                 {/* Chaos Rate Control */}
-                <div className="p-4 bg-slate-900/50 rounded-lg border border-slate-700/50">
-                  <div className="flex justify-between mb-2">
+                <div className="p-5 bg-slate-900/50 rounded-xl border border-slate-700/50">
+                  <div className="flex justify-between mb-3">
                     <h4 className="font-medium text-white flex items-center gap-2">
                       <AlertTriangle size={16} className="text-amber-400" />
                       Chaos Rate
                     </h4>
-                    <span className="text-amber-400 font-mono">
+                    <span className="text-amber-400 font-mono text-lg">
                       {chaosControl.chaos_rate}%
                     </span>
                   </div>
@@ -2463,22 +3353,24 @@ const Dashboard = ({ token, logout }) => {
                     onChange={(e) => updateChaosRate(parseInt(e.target.value))}
                     className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-amber-500"
                   />
-                  <div className="flex justify-between text-xs text-slate-500 mt-1">
+                  <div className="flex justify-between text-xs text-slate-500 mt-2">
                     <span>0% (All clean)</span>
                     <span>100% (All errors)</span>
                   </div>
                 </div>
               </div>
 
-              <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg p-6 backdrop-blur-sm">
-                <h3 className="font-bold text-lg text-white mb-4 flex items-center gap-2">
+              <div className="pro-card p-6">
+                <h3 className="font-bold text-lg text-white mb-6 flex items-center gap-2">
                   <Globe className="text-cyan-400" /> 3-Way Reconciliation
                   Sources
                 </h3>
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-emerald-500/30">
+                  <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-xl border border-emerald-500/30 hover:border-emerald-500/50 transition-colors">
                     <div className="flex items-center gap-3">
-                      <CreditCard className="text-blue-400" />
+                      <div className="p-2 rounded-lg bg-blue-500/20">
+                        <CreditCard className="text-blue-400" />
+                      </div>
                       <div>
                         <p className="text-white font-medium">
                           Payment Gateway
@@ -2488,13 +3380,16 @@ const Dashboard = ({ token, logout }) => {
                         </p>
                       </div>
                     </div>
-                    <span className="text-emerald-400 text-sm">
-                      ● Connected
+                    <span className="text-emerald-400 text-sm font-medium flex items-center gap-1.5">
+                      <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></span>
+                      Connected
                     </span>
                   </div>
-                  <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-emerald-500/30">
+                  <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-xl border border-emerald-500/30 hover:border-emerald-500/50 transition-colors">
                     <div className="flex items-center gap-3">
-                      <Server className="text-purple-400" />
+                      <div className="p-2 rounded-lg bg-purple-500/20">
+                        <Server className="text-purple-400" />
+                      </div>
                       <div>
                         <p className="text-white font-medium">
                           Core Banking System
@@ -2504,13 +3399,16 @@ const Dashboard = ({ token, logout }) => {
                         </p>
                       </div>
                     </div>
-                    <span className="text-emerald-400 text-sm">
-                      ● Connected
+                    <span className="text-emerald-400 text-sm font-medium flex items-center gap-1.5">
+                      <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></span>
+                      Connected
                     </span>
                   </div>
-                  <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-lg border border-emerald-500/30">
+                  <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-xl border border-emerald-500/30 hover:border-emerald-500/50 transition-colors">
                     <div className="flex items-center gap-3">
-                      <Smartphone className="text-cyan-400" />
+                      <div className="p-2 rounded-lg bg-cyan-500/20">
+                        <Smartphone className="text-cyan-400" />
+                      </div>
                       <div>
                         <p className="text-white font-medium">
                           Mobile Banking App
@@ -2520,36 +3418,52 @@ const Dashboard = ({ token, logout }) => {
                         </p>
                       </div>
                     </div>
-                    <span className="text-emerald-400 text-sm">
-                      ● Connected
+                    <span className="text-emerald-400 text-sm font-medium flex items-center gap-1.5">
+                      <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></span>
+                      Connected
                     </span>
                   </div>
                 </div>
               </div>
 
-              <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-lg p-6 backdrop-blur-sm">
-                <h3 className="font-bold text-lg text-white mb-4 flex items-center gap-2">
+              <div className="pro-card p-6">
+                <h3 className="font-bold text-lg text-white mb-6 flex items-center gap-2">
                   <RefreshCw className="text-amber-400" /> System Maintenance
                 </h3>
                 <div className="space-y-3">
-                  <button className="w-full p-3 bg-slate-900/50 hover:bg-slate-900 border border-slate-700/50 rounded-lg text-left flex items-center justify-between group transition-colors">
-                    <span className="text-slate-300">
+                  <button
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          "Clear all cached transactions? This will reset the dashboard view."
+                        )
+                      ) {
+                        setAlerts([]);
+                        setChartData([]);
+                        setHeatmapData([]);
+                        setMismatchTypes([]);
+                        setRiskAmount(0);
+                      }
+                    }}
+                    className="w-full p-4 bg-slate-900/50 hover:bg-slate-800 border border-slate-700/50 hover:border-slate-600 rounded-xl text-left flex items-center justify-between group transition-all"
+                  >
+                    <span className="text-slate-300 font-medium">
                       Clear Transaction Cache
                     </span>
                     <LogOut
-                      size={16}
+                      size={18}
                       className="text-slate-500 group-hover:text-white transition-colors"
                     />
                   </button>
                   <button
                     onClick={downloadReport}
-                    className="w-full p-3 bg-slate-900/50 hover:bg-slate-900 border border-slate-700/50 rounded-lg text-left flex items-center justify-between group transition-colors"
+                    className="w-full p-4 bg-slate-900/50 hover:bg-slate-800 border border-slate-700/50 hover:border-slate-600 rounded-xl text-left flex items-center justify-between group transition-all"
                   >
-                    <span className="text-slate-300">
+                    <span className="text-slate-300 font-medium">
                       Export Reconciliation Report
                     </span>
                     <FileText
-                      size={16}
+                      size={18}
                       className="text-slate-500 group-hover:text-white transition-colors"
                     />
                   </button>
