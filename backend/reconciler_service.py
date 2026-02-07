@@ -19,6 +19,9 @@ from sqlalchemy.orm import sessionmaker, declarative_base, Mapped, mapped_column
 import jwt
 from kafka_config import build_kafka_common_kwargs, load_kafka_settings
 from anomaly_engine import engine as anomaly_engine
+from mitigation_engine import mitigation_engine, MitigationStrategy
+from graph_engine import fraud_detector
+from predictor import predictor
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -226,52 +229,75 @@ def emit_alert(txn_data, message, severity, analysis=None, risk_score=0, mismatc
     }
     socketio.emit('new_alert', payload)
 
-def auto_mitigate(session, txn, issue_type):
-    """Automatically attempts to fix the discrepancy using 3-way reconciliation logic."""
-    if not SYSTEM_SETTINGS["auto_mitigation"]:
-        return False
-
-    time.sleep(0.5) # Simulate processing time
+def intelligent_mitigate(session, txn, issue_type, anomaly_confidence: float, risk_score: int):
+    """
+    Intelligent mitigation using the self-learning MitigationEngine.
     
-    if issue_type == 'AMOUNT_MISMATCH':
-        # Use majority voting - if 2 out of 3 sources agree, use that value
-        amounts = []
-        if txn.pg_data: amounts.append(('pg', txn.pg_data['amount']))
-        if txn.cbs_data: amounts.append(('cbs', txn.cbs_data['amount']))
-        if txn.mobile_data: amounts.append(('mobile', txn.mobile_data['amount']))
-        
-        # Find consensus amount
-        amount_counts = defaultdict(list)
-        for source, amt in amounts:
-            amount_counts[amt].append(source)
-        
-        # Get the amount with most votes
-        consensus_amount = max(amount_counts.items(), key=lambda x: len(x[1]))[0]
-        
-        if txn.cbs_data:
-            new_cbs = dict(txn.cbs_data)
-            new_cbs['amount'] = consensus_amount
-            txn.cbs_data = new_cbs
-        if txn.mobile_data:
-            new_mobile = dict(txn.mobile_data)
-            new_mobile['amount'] = consensus_amount
-            txn.mobile_data = new_mobile
-            
-        txn.status = "AUTO_RESOLVED"
-        txn.resolved_at = time.time()
-        session.commit()
-        
-        resolution_time = txn.resolved_at - txn.timestamp
-        STATS_TRACKER["resolution_times"].append(resolution_time)
-        
-        emit_alert(txn.pg_data, "🤖 AUTO-MITIGATED: Amount Aligned via Consensus", "success", 
-                  f"System used {len(amount_counts[consensus_amount])}-way consensus to resolve discrepancy.", 0)
-        return True
+    Returns tuple of (was_resolved: bool, decision: MitigationDecision or None)
+    """
+    if not SYSTEM_SETTINGS["auto_mitigation"]:
+        return False, None
 
+    # Get mitigation decision from the intelligent engine
+    decision = mitigation_engine.analyze_and_decide(
+        tx_id=txn.tx_id,
+        pg_data=txn.pg_data,
+        cbs_data=txn.cbs_data,
+        mobile_data=txn.mobile_data,
+        issue_type=issue_type,
+        anomaly_confidence=anomaly_confidence,
+        risk_score=risk_score
+    )
+    
+    # Build the AI payload with mitigation intelligence
+    mitigation_ai = {
+        "gate_decision": decision.gate_decision,
+        "strategy": decision.strategy_used.value,
+        "confidence": decision.confidence,
+        "reasoning": decision.reasoning,
+        "contributing_factors": decision.contributing_factors,
+        "source_trust": decision.source_trust_snapshot,
+        "system_health": decision.system_health_snapshot,
+        "risk_assessment": decision.risk_assessment,
+        "resolved_values": decision.resolved_values
+    }
+    
+    if not decision.should_auto_resolve:
+        # Emit alert indicating human review needed
+        severity = "warning" if decision.gate_decision == "HUMAN_REVIEW" else "error"
+        primary_data = txn.pg_data or txn.cbs_data or txn.mobile_data
+        emit_alert(
+            primary_data,
+            f"🧠 {decision.gate_decision}: {issue_type} requires {'review' if severity == 'warning' else 'escalation'}",
+            severity,
+            decision.reasoning,
+            risk_score,
+            issue_type,
+            ai=mitigation_ai
+        )
+        return False, decision
+    
+    # AUTO_RESOLVED path - apply the resolution
+    resolved = decision.resolved_values
+    
+    if issue_type in ['AMOUNT_MISMATCH', 'FRAUD']:
+        consensus_amount = resolved.get("amount")
+        if consensus_amount is not None:
+            if txn.pg_data:
+                new_pg = dict(txn.pg_data)
+                new_pg['amount'] = consensus_amount
+                txn.pg_data = new_pg
+            if txn.cbs_data:
+                new_cbs = dict(txn.cbs_data)
+                new_cbs['amount'] = consensus_amount
+                txn.cbs_data = new_cbs
+            if txn.mobile_data:
+                new_mobile = dict(txn.mobile_data)
+                new_mobile['amount'] = consensus_amount
+                txn.mobile_data = new_mobile
+                
     elif issue_type == 'STATUS_MISMATCH':
-        # Trust PG as source of truth for status
-        target_status = txn.pg_data['status'] if txn.pg_data else 'SUCCESS'
-        
+        target_status = resolved.get("status", "SUCCESS")
         if txn.cbs_data:
             new_cbs = dict(txn.cbs_data)
             new_cbs['status'] = target_status
@@ -281,33 +307,43 @@ def auto_mitigate(session, txn, issue_type):
             new_mobile['status'] = target_status
             txn.mobile_data = new_mobile
             
-        txn.status = "AUTO_RESOLVED"
-        txn.resolved_at = time.time()
-        session.commit()
-        emit_alert(txn.pg_data, "🤖 AUTO-MITIGATED: Status Synchronized", "success", 
-                  "System propagated authoritative status from Payment Gateway.", 0)
-        return True
-        
     elif issue_type in ['MISSING_CBS', 'MISSING_MOBILE']:
-        # Replay transaction to missing system
         source_data = txn.pg_data or txn.cbs_data or txn.mobile_data
-        
         if issue_type == 'MISSING_CBS':
             txn.cbs_data = source_data
         else:
             txn.mobile_data = source_data
-            
-        txn.status = "AUTO_RESOLVED"
-        txn.resolved_at = time.time()
-        session.commit()
-        emit_alert(source_data, f"🤖 AUTO-MITIGATED: Replayed to {issue_type.split('_')[1]}", "success", 
-                  "Transaction re-injected into missing system.", 0)
-        return True
-        
-    return False
+    
+    txn.status = "AUTO_RESOLVED"
+    txn.resolved_at = time.time()
+    session.commit()
+    
+    resolution_time = txn.resolved_at - txn.timestamp
+    STATS_TRACKER["resolution_times"].append(resolution_time)
+    
+    # Emit success alert with full intelligence details
+    primary_data = txn.pg_data or txn.cbs_data or txn.mobile_data
+    emit_alert(
+        primary_data,
+        f"🧠 AUTO-RESOLVED via {decision.strategy_used.value.upper()}",
+        "success",
+        f"{decision.reasoning} | Confidence: {decision.confidence:.1%}",
+        0,
+        ai=mitigation_ai
+    )
+    
+    return True, decision
+
+
+def auto_mitigate(session, txn, issue_type, anomaly_confidence: float = 0.8, risk_score: int = 50):
+    """
+    Wrapper for backward compatibility - calls intelligent_mitigate.
+    """
+    resolved, _ = intelligent_mitigate(session, txn, issue_type, anomaly_confidence, risk_score)
+    return resolved
 
 def reconcile_transaction(session, tx_id):
-    """Enhanced 3-way reconciliation with real-time anomaly detection engine."""
+    """Enhanced 3-way reconciliation with real-time anomaly detection and intelligent mitigation."""
     txn = session.query(Transaction).filter_by(tx_id=tx_id).first()
 
     if not txn:
@@ -316,6 +352,14 @@ def reconcile_transaction(session, tx_id):
     pg = txn.pg_data
     cbs = txn.cbs_data
     mobile = txn.mobile_data
+
+    # Track source health in the mitigation engine
+    if pg:
+        mitigation_engine.record_source_success("pg")
+    if cbs:
+        mitigation_engine.record_source_success("cbs")
+    if mobile:
+        mitigation_engine.record_source_success("mobile")
 
     # Need at least 2 sources to reconcile
     sources_present = sum([1 for s in [pg, cbs, mobile] if s])
@@ -329,6 +373,7 @@ def reconcile_transaction(session, tx_id):
     risk_score = insight.get("risk_score", 0)
     analysis = insight.get("analysis", "")
     risk_level = insight.get("risk_level", "LOW")
+    anomaly_confidence = insight.get("confidence", 0.8)
 
     # Check for amount mismatches across all sources
     amounts = [s['amount'] for s in [pg, cbs, mobile] if s]
@@ -339,7 +384,9 @@ def reconcile_transaction(session, tx_id):
         mtype = "FRAUD" if risk_score >= 90 else "AMOUNT_MISMATCH"
         upsert_analysis(session, tx_id, insight)
         emit_alert(primary_data, "⚠️ CRITICAL: AMOUNT MISMATCH DETECTED", "error", analysis, risk_score, mtype, ai=insight)
-        auto_mitigate(session, txn, 'AMOUNT_MISMATCH')
+        auto_mitigate(session, txn, mtype, anomaly_confidence, risk_score)
+        # Record error for predictor
+        predictor.record_transaction(primary_data.get('amount', 0), is_error=True, is_mismatch=True)
         return None, None, None, 0
 
     # Check for status mismatches
@@ -350,7 +397,9 @@ def reconcile_transaction(session, tx_id):
         session.commit()
         upsert_analysis(session, tx_id, insight)
         emit_alert(primary_data, "⚠️ STATE ERROR: Status Mismatch", "warning", analysis, risk_score, "STATUS_MISMATCH", ai=insight)
-        auto_mitigate(session, txn, 'STATUS_MISMATCH')
+        auto_mitigate(session, txn, 'STATUS_MISMATCH', anomaly_confidence, risk_score)
+        # Record mismatch for predictor
+        predictor.record_transaction(primary_data.get('amount', 0), is_error=False, is_mismatch=True)
         return None, None, None, 0
 
     # Check for timestamp drift
@@ -367,6 +416,50 @@ def reconcile_transaction(session, tx_id):
     txn.status = "MATCHED"
     txn.resolved_at = time.time()
     session.commit()
+    
+    # Record in predictor for analytics
+    predictor.record_transaction(
+        amount=primary_data.get('amount', 0),
+        is_error=False,
+        is_mismatch=False,
+        timestamp=primary_data.get('timestamp', time.time())
+    )
+    
+    # Feed transaction to fraud detector for ring analysis
+    try:
+        from_account = primary_data.get('user_id', primary_data.get('upi_id', ''))
+        to_account = primary_data.get('recipient_id', primary_data.get('to_upi_id', ''))
+        
+        if from_account:
+            fraud_rings = fraud_detector.add_transaction(
+                tx_id=tx_id,
+                from_account=from_account,
+                to_account=to_account,
+                amount=primary_data.get('amount', 0),
+                timestamp=primary_data.get('timestamp', time.time()),
+                currency=primary_data.get('currency', 'INR')
+            )
+            
+            # Alert on any detected fraud rings
+            for ring in fraud_rings:
+                ring_alert = {
+                    "ring_id": ring.ring_id,
+                    "type": ring.ring_type,
+                    "accounts": ring.accounts[:5],
+                    "risk_score": ring.risk_score
+                }
+                emit_alert(
+                    primary_data,
+                    f"🚨 FRAUD RING DETECTED: {ring.ring_type.upper()}",
+                    "error",
+                    f"Ring {ring.ring_id} involving {len(ring.accounts)} accounts. Evidence: {ring.evidence[0]}",
+                    int(ring.risk_score),
+                    "FRAUD_RING",
+                    ai={"fraud_ring": ring_alert}
+                )
+    except Exception as e:
+        logger.debug(f"Fraud detection skipped: {e}")
+    
     return "✅ 3-WAY MATCH VERIFIED", "success", "Transaction Verified Across All Systems", 0
 
 def check_missing_transactions():
@@ -386,20 +479,28 @@ def check_missing_transactions():
         insight = anomaly_engine.analyze_transaction(txn.tx_id, txn.pg_data, txn.cbs_data, txn.mobile_data)
         analysis = insight.get("analysis", "")
         risk_score = insight.get("risk_score", 50)
+        anomaly_confidence = insight.get("confidence", 0.7)
         
         missing_systems = []
         if txn.cbs_data is None:
             missing_systems.append("CBS")
+            mitigation_engine.record_source_failure("cbs", txn.tx_id)
         if txn.mobile_data is None:
             missing_systems.append("MOBILE")
+            mitigation_engine.record_source_failure("mobile", txn.tx_id)
         if txn.pg_data is None:
             missing_systems.append("PG")
+            mitigation_engine.record_source_failure("pg", txn.tx_id)
         
         if len(missing_systems) >= 2:
             txn.status = "CRITICAL_MISSING"
             txn.mismatch_type = "MULTI_MISSING"
             upsert_analysis(session, txn.tx_id, insight)
-            emit_alert(primary_data, f"🔥 CRITICAL: Missing in {', '.join(missing_systems)}", "error", analysis, risk_score, "DATA_LOSS", ai=insight)
+            
+            # Include system health in alert
+            health_report = mitigation_engine.get_system_health_report()
+            ai_with_health = {**insight, "system_health": health_report}
+            emit_alert(primary_data, f"🔥 CRITICAL: Missing in {', '.join(missing_systems)}", "error", analysis, risk_score, "DATA_LOSS", ai=ai_with_health)
             send_ops_alert("Multi-System Data Loss", f"Transaction {txn.tx_id} missing in {missing_systems}", 15158332)
             
         elif not txn.cbs_data:
@@ -408,14 +509,14 @@ def check_missing_transactions():
             upsert_analysis(session, txn.tx_id, insight)
             emit_alert(primary_data, "❌ MISSING IN CBS (Core Banking Data Loss)", "error", analysis, risk_score, "MISSING_CBS", ai=insight)
             send_ops_alert("Data Loss Detected", f"Transaction {txn.tx_id} missing in Core Banking", 15158332)
-            auto_mitigate(session, txn, 'MISSING_CBS')
+            auto_mitigate(session, txn, 'MISSING_CBS', anomaly_confidence, risk_score)
             
         elif not txn.mobile_data:
             txn.status = "MISSING_MOBILE"
             txn.mismatch_type = "MISSING_MOBILE"
             upsert_analysis(session, txn.tx_id, insight)
             emit_alert(primary_data, "📱 MISSING IN MOBILE (Sync Failure)", "warning", analysis, risk_score, "MISSING_MOBILE", ai=insight)
-            auto_mitigate(session, txn, 'MISSING_MOBILE')
+            auto_mitigate(session, txn, 'MISSING_MOBILE', anomaly_confidence, risk_score)
             
         elif not txn.pg_data:
             txn.status = "MISSING_PG"
@@ -669,6 +770,10 @@ def health_check():
     hours, remainder = divmod(int(uptime), 3600)
     minutes, seconds = divmod(remainder, 60)
     
+    # Get mitigation engine health
+    system_health = mitigation_engine.get_system_health_report()
+    active_incidents = mitigation_engine.get_active_incidents()
+    
     return jsonify({
         'status': 'healthy' if (db_healthy and CONNECTION_STATE["kafka_connected"]) else 'degraded',
         'kafka': {
@@ -681,6 +786,11 @@ def health_check():
             'connected': db_healthy
         },
         'anomaly_engine': anomaly_engine.get_engine_stats(),
+        'mitigation_engine': {
+            'source_health': system_health,
+            'active_incidents': active_incidents,
+            'trust_scores': mitigation_engine.get_trust_scores()
+        },
         'uptime': f"{hours}h {minutes}m {seconds}s",
         'uptime_seconds': uptime
     })
@@ -690,6 +800,80 @@ def health_check():
 def engine_status():
     """Health endpoint for the Anomaly Detection Engine (no auth)."""
     return jsonify(anomaly_engine.get_engine_stats())
+
+
+@app.route('/api/engine/learning', methods=['GET'])
+def engine_learning():
+    """Get the Mitigation Engine's learning metrics and trust scores."""
+    return jsonify(mitigation_engine.get_learning_metrics())
+
+
+@app.route('/api/engine/incidents', methods=['GET'])
+def engine_incidents():
+    """Get active system incidents detected by the Mitigation Engine."""
+    return jsonify({
+        'incidents': mitigation_engine.get_active_incidents(),
+        'system_health': mitigation_engine.get_system_health_report()
+    })
+
+
+# ============================================================================
+# FRAUD RING DETECTION API - Hackathon Feature
+# ============================================================================
+
+@app.route('/api/fraud/status', methods=['GET'])
+def fraud_status():
+    """Get fraud ring detection status and statistics."""
+    return jsonify(fraud_detector.get_ring_status())
+
+
+@app.route('/api/fraud/graph', methods=['GET'])
+def fraud_graph():
+    """Get transaction graph data for visualization."""
+    max_nodes = request.args.get('max_nodes', 100, type=int)
+    return jsonify(fraud_detector.get_graph_data(max_nodes))
+
+
+@app.route('/api/fraud/account/<account_id>', methods=['GET'])
+def fraud_account_risk(account_id):
+    """Get risk profile for a specific account."""
+    profile = fraud_detector.get_account_risk(account_id)
+    if not profile:
+        return jsonify({"error": "Account not found"}), 404
+    return jsonify(profile)
+
+
+@app.route('/api/fraud/rings', methods=['GET'])
+def fraud_rings():
+    """Get all detected fraud rings."""
+    status = fraud_detector.get_ring_status()
+    return jsonify({
+        "total_detected": status["detected_rings"],
+        "active_rings": status["active_rings"],
+        "rings": status["recent_rings"]
+    })
+
+
+# ============================================================================
+# PREDICTIVE ANALYTICS API - Hackathon Feature
+# ============================================================================
+
+@app.route('/api/predictions', methods=['GET'])
+def get_predictions():
+    """Get current predictions for TPM and error rates."""
+    return jsonify(predictor.get_predictions())
+
+
+@app.route('/api/predictions/insights', methods=['GET'])
+def get_prediction_insights():
+    """Get actionable insights based on predictions."""
+    return jsonify(predictor.get_insights())
+
+
+@app.route('/api/predictions/forecast', methods=['GET'])
+def get_forecast_chart():
+    """Get forecast chart data for visualization."""
+    return jsonify(predictor.get_forecast_chart_data())
 
 
 @app.route('/api/chaos/start', methods=['POST'])
@@ -721,6 +905,169 @@ def chaos_speed():
     socketio.emit('chaos_status', CHAOS_CONTROL)
     print(f"🎮 Chaos Settings Updated: Speed={CHAOS_CONTROL['speed']}x, Chaos Rate={CHAOS_CONTROL['chaos_rate']}%")
     return jsonify(CHAOS_CONTROL)
+
+
+# ============================================================================
+# ADVANCED CHAOS SCENARIOS API - Hackathon Demo Mode
+# ============================================================================
+
+AVAILABLE_SCENARIOS = {
+    "cbs_outage": {
+        "name": "CBS System Outage",
+        "description": "Core Banking System goes completely dark. No CBS data for any transactions.",
+        "icon": "💥",
+        "severity": "critical",
+        "default_duration": 30
+    },
+    "mobile_outage": {
+        "name": "Mobile App Crash",
+        "description": "Mobile banking app crashes globally. No mobile data synced.",
+        "icon": "📱",
+        "severity": "high",
+        "default_duration": 25
+    },
+    "network_partition": {
+        "name": "Network Partition",
+        "description": "One geographic region is completely isolated from the network.",
+        "icon": "🌐",
+        "severity": "critical",
+        "default_duration": 40
+    },
+    "gradual_degradation": {
+        "name": "Gradual Degradation",
+        "description": "CBS data accuracy slowly degrades over time (amounts drift).",
+        "icon": "📉",
+        "severity": "medium",
+        "default_duration": 60
+    },
+    "fraud_ring": {
+        "name": "Fraud Ring Attack",
+        "description": "Coordinated fraud attempt with linked suspicious accounts.",
+        "icon": "🕵️",
+        "severity": "critical",
+        "default_duration": 45
+    },
+    "flash_crash": {
+        "name": "Flash Crash",
+        "description": "Massive transaction volume spike with cascading errors.",
+        "icon": "⚡",
+        "severity": "critical",
+        "default_duration": 20
+    },
+    "data_corruption": {
+        "name": "Data Corruption",
+        "description": "Random data fields become corrupted in transit.",
+        "icon": "🔥",
+        "severity": "high",
+        "default_duration": 35
+    },
+    "replay_attack": {
+        "name": "Replay Attack",
+        "description": "Duplicate transactions being injected (possible security breach).",
+        "icon": "🔁",
+        "severity": "high",
+        "default_duration": 30
+    }
+}
+
+
+@app.route('/api/chaos/scenarios', methods=['GET'])
+def get_available_scenarios():
+    """Get list of available chaos scenarios."""
+    return jsonify({
+        "scenarios": AVAILABLE_SCENARIOS,
+        "active": get_scenario_status_from_producer()
+    })
+
+
+@app.route('/api/chaos/scenario/trigger', methods=['POST'])
+def trigger_chaos_scenario():
+    """Trigger an advanced chaos scenario."""
+    data = request.json or {}
+    scenario = data.get('scenario', 'cbs_outage')
+    duration = data.get('duration', AVAILABLE_SCENARIOS.get(scenario, {}).get('default_duration', 30))
+    intensity = data.get('intensity', 0.8)
+    region = data.get('region')
+    
+    if scenario not in AVAILABLE_SCENARIOS:
+        return jsonify({"error": f"Unknown scenario: {scenario}"}), 400
+    
+    # Store scenario state for the producer to read
+    CHAOS_CONTROL["active_scenario"] = {
+        "scenario": scenario,
+        "duration": duration,
+        "intensity": intensity,
+        "region": region,
+        "start_time": time.time()
+    }
+    
+    scenario_info = AVAILABLE_SCENARIOS[scenario]
+    print(f"\n{'='*60}")
+    print(f"🚨 CHAOS SCENARIO TRIGGERED: {scenario_info['icon']} {scenario_info['name']}")
+    print(f"   Duration: {duration}s | Intensity: {intensity*100:.0f}%")
+    if region:
+        print(f"   Affected Region: {region}")
+    print(f"{'='*60}\n")
+    
+    socketio.emit('scenario_triggered', {
+        "scenario": scenario,
+        "info": scenario_info,
+        "duration": duration,
+        "intensity": intensity,
+        "region": region
+    })
+    
+    return jsonify({
+        "success": True,
+        "scenario": scenario,
+        "info": scenario_info,
+        "duration": duration,
+        "intensity": intensity
+    })
+
+
+@app.route('/api/chaos/scenario/stop', methods=['POST'])
+def stop_chaos_scenario():
+    """Stop any active chaos scenario."""
+    old_scenario = CHAOS_CONTROL.get("active_scenario", {}).get("scenario", "none")
+    CHAOS_CONTROL["active_scenario"] = None
+    
+    print(f"✅ Chaos scenario stopped: {old_scenario}")
+    socketio.emit('scenario_stopped', {"stopped": old_scenario})
+    
+    return jsonify({"success": True, "stopped": old_scenario})
+
+
+@app.route('/api/chaos/scenario/status', methods=['GET'])
+def get_scenario_status():
+    """Get current scenario status."""
+    return jsonify(get_scenario_status_from_producer())
+
+
+def get_scenario_status_from_producer():
+    """Calculate scenario status from CHAOS_CONTROL."""
+    active = CHAOS_CONTROL.get("active_scenario")
+    if not active:
+        return {"active": False, "scenario": "none"}
+    
+    elapsed = time.time() - active.get("start_time", 0)
+    duration = active.get("duration", 30)
+    
+    if elapsed >= duration:
+        # Scenario expired
+        CHAOS_CONTROL["active_scenario"] = None
+        return {"active": False, "scenario": "none", "expired": True}
+    
+    return {
+        "active": True,
+        "scenario": active.get("scenario"),
+        "info": AVAILABLE_SCENARIOS.get(active.get("scenario"), {}),
+        "time_remaining": round(duration - elapsed, 1),
+        "progress": round((elapsed / duration) * 100, 1),
+        "intensity": active.get("intensity", 0.8),
+        "region": active.get("region")
+    }
+
 
 @app.route('/api/transaction/<tx_id>', methods=['GET'])
 @token_required
@@ -814,6 +1161,14 @@ def manual_resolve():
     
     source_data = txn.pg_data or txn.cbs_data or txn.mobile_data
     
+    # Determine what the engine would have recommended (for learning)
+    engine_recommendation = "resolve"  # Default
+    if txn.pg_data and txn.cbs_data and txn.mobile_data:
+        # Engine would have recommended based on trust scores
+        trust = mitigation_engine.get_trust_scores()
+        max_trust_source = max(trust.items(), key=lambda x: x[1])[0]
+        engine_recommendation = f"accept_{max_trust_source}"
+    
     if action == 'accept_pg' and txn.pg_data:
         txn.cbs_data = txn.pg_data
         txn.mobile_data = txn.pg_data
@@ -841,10 +1196,27 @@ def manual_resolve():
     
     txn.resolved_at = time.time()
     session.commit()
+    
+    # Record feedback to the mitigation engine for learning
+    mitigation_engine.record_resolution_feedback(
+        tx_id=tx_id,
+        engine_recommendation=engine_recommendation,
+        human_choice=action,
+        strategy_used=MitigationStrategy.HYBRID  # Default strategy
+    )
+    
     emit_alert(source_data, f"🛠️ {msg}", "success", "Operator Intervention", 0)
     session.close()
     
-    return jsonify({'message': 'Transaction resolved successfully'})
+    # Return with learning info
+    return jsonify({
+        'message': 'Transaction resolved successfully',
+        'learning': {
+            'engine_suggested': engine_recommendation,
+            'human_chose': action,
+            'feedback_recorded': True
+        }
+    })
 
 @app.route('/api/export', methods=['GET'])
 @token_required

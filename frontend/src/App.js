@@ -62,7 +62,11 @@ import {
   Lightbulb,
   ExternalLink,
   Banknote,
+  XCircle,
+  MapPin,
 } from "lucide-react";
+import WorldMap from "./components/WorldMap";
+import IntelligenceCard from "./components/IntelligenceCard";
 import "./App.css";
 
 const SOCKET_URL = "http://localhost:5000";
@@ -1044,6 +1048,16 @@ const Dashboard = ({ token, logout }) => {
     speed: 1.0,
     chaos_rate: 40,
   });
+  
+  // Advanced Chaos Scenarios state
+  const [scenarioState, setScenarioState] = useState({
+    active: false,
+    scenario: 'none',
+    time_remaining: 0,
+    progress: 0,
+    intensity: 0.8
+  });
+  const [availableScenarios, setAvailableScenarios] = useState({});
 
   // Transaction filter state
   const [txFilter, setTxFilter] = useState("all"); // 'all', 'errors', 'warnings', 'success'
@@ -1155,6 +1169,60 @@ const Dashboard = ({ token, logout }) => {
     }
   };
 
+  // Fetch available chaos scenarios
+  const fetchScenarios = useCallback(async () => {
+    try {
+      const res = await axios.get(`${SOCKET_URL}/api/chaos/scenarios`);
+      setAvailableScenarios(res.data.scenarios || {});
+      if (res.data.active) {
+        setScenarioState(res.data.active);
+      }
+    } catch (err) {
+      console.error("Failed to fetch scenarios");
+    }
+  }, []);
+
+  // Fetch scenario status
+  const fetchScenarioStatus = useCallback(async () => {
+    try {
+      const res = await axios.get(`${SOCKET_URL}/api/chaos/scenario/status`);
+      setScenarioState(res.data);
+    } catch (err) {
+      console.error("Failed to fetch scenario status");
+    }
+  }, []);
+
+  // Trigger a chaos scenario
+  const triggerScenario = async (scenario, duration = 30, intensity = 0.8) => {
+    try {
+      const res = await axios.post(`${SOCKET_URL}/api/chaos/scenario/trigger`, {
+        scenario,
+        duration,
+        intensity
+      });
+      setScenarioState({
+        active: true,
+        scenario: res.data.scenario,
+        time_remaining: res.data.duration,
+        progress: 0,
+        intensity: res.data.intensity,
+        info: res.data.info
+      });
+    } catch (err) {
+      console.error("Failed to trigger scenario");
+    }
+  };
+
+  // Stop active scenario
+  const stopScenario = async () => {
+    try {
+      await axios.post(`${SOCKET_URL}/api/chaos/scenario/stop`);
+      setScenarioState({ active: false, scenario: 'none' });
+    } catch (err) {
+      console.error("Failed to stop scenario");
+    }
+  };
+
   const fetchStats = useCallback(async () => {
     try {
       const res = await axios.get(`${SOCKET_URL}/api/stats`);
@@ -1252,10 +1320,12 @@ const Dashboard = ({ token, logout }) => {
     fetchSettings();
     fetchChaosStatus();
     fetchHealth();
+    fetchScenarios();
 
     const interval = setInterval(fetchStats, 3000);
     const chaosInterval = setInterval(fetchChaosStatus, 2000);
     const healthInterval = setInterval(fetchHealth, 5000);
+    const scenarioInterval = setInterval(fetchScenarioStatus, 1000);
 
     return () => {
       socket.off("connect");
@@ -1267,8 +1337,9 @@ const Dashboard = ({ token, logout }) => {
       clearInterval(interval);
       clearInterval(chaosInterval);
       clearInterval(healthInterval);
+      clearInterval(scenarioInterval);
     };
-  }, [fetchStats, fetchChaosStatus, processAlertQueue, settings.sound_alerts]);
+  }, [fetchStats, fetchChaosStatus, processAlertQueue, settings.sound_alerts, fetchScenarios, fetchScenarioStatus]);
 
   const downloadReport = async () => {
     try {
@@ -1929,6 +2000,32 @@ const Dashboard = ({ token, logout }) => {
                     </div>
                   </div>
                 </div>
+              </div>
+
+              {/* LIVE WORLD MAP - Hackathon Showstopper */}
+              <div className="pro-card p-6 mb-8">
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="font-bold text-lg text-white flex items-center gap-2">
+                    <MapPin className="text-cyan-400" />
+                    Live Transaction Map
+                    <span className="ml-2 px-2 py-0.5 text-xs bg-cyan-500/20 text-cyan-400 rounded-full animate-pulse">LIVE</span>
+                  </h3>
+                  <div className="flex items-center gap-4 text-sm text-slate-400">
+                    <span>7 Countries</span>
+                    <span className="text-slate-600">|</span>
+                    <span>60+ Cities</span>
+                  </div>
+                </div>
+                <WorldMap 
+                  transactions={alerts.slice(0, 30)} 
+                  riskData={geoRiskData}
+                  height="350px"
+                />
+              </div>
+
+              {/* AI INTELLIGENCE SUMMARY - The "Gen AI" Story */}
+              <div className="mb-8">
+                <IntelligenceCard />
               </div>
 
               {/* ROW: Chart + Live Feed - Fixed heights for consistent layout */}
@@ -3145,6 +3242,68 @@ const Dashboard = ({ token, logout }) => {
                     <span>0% (All clean)</span>
                     <span>100% (All errors)</span>
                   </div>
+                </div>
+
+                {/* Advanced Chaos Scenarios - HACKATHON DEMO MODE */}
+                <div className="mt-4 p-5 bg-gradient-to-br from-red-950/50 to-orange-950/30 rounded-xl border border-red-500/30">
+                  <h4 className="font-bold text-white flex items-center gap-2 mb-4">
+                    <span className="text-2xl">🎭</span>
+                    <span>DEMO MODE - Chaos Scenarios</span>
+                    {scenarioState.active && (
+                      <span className="ml-auto px-3 py-1 bg-red-500/30 text-red-300 rounded-full text-sm animate-pulse">
+                        ACTIVE: {Math.round(scenarioState.time_remaining)}s
+                      </span>
+                    )}
+                  </h4>
+                  
+                  {scenarioState.active ? (
+                    <div className="space-y-4">
+                      <div className="p-4 bg-red-900/30 rounded-xl border border-red-500/50">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-white font-medium flex items-center gap-2">
+                            <span className="text-xl">{availableScenarios[scenarioState.scenario]?.icon || '🔥'}</span>
+                            {availableScenarios[scenarioState.scenario]?.name || scenarioState.scenario}
+                          </span>
+                          <span className="text-red-400 text-sm">{Math.round(scenarioState.intensity * 100)}% INT</span>
+                        </div>
+                        <div className="w-full bg-slate-800 rounded-full h-2.5 mb-2">
+                          <div 
+                            className="bg-gradient-to-r from-red-500 to-orange-500 h-2.5 rounded-full transition-all duration-1000"
+                            style={{ width: `${scenarioState.progress}%` }}
+                          ></div>
+                        </div>
+                        <p className="text-slate-400 text-sm">{availableScenarios[scenarioState.scenario]?.description}</p>
+                      </div>
+                      <button
+                        onClick={stopScenario}
+                        className="w-full py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-xl font-medium transition-all flex items-center justify-center gap-2"
+                      >
+                        <XCircle size={18} /> Stop Scenario
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-3">
+                      {Object.entries(availableScenarios).slice(0, 8).map(([key, scenario]) => (
+                        <button
+                          key={key}
+                          onClick={() => triggerScenario(key, scenario.default_duration || 30, 0.8)}
+                          className={`p-3 rounded-xl border transition-all text-left hover:scale-[1.02] ${
+                            scenario.severity === 'critical' 
+                              ? 'bg-red-900/30 border-red-500/40 hover:border-red-400' 
+                              : scenario.severity === 'high'
+                              ? 'bg-orange-900/30 border-orange-500/40 hover:border-orange-400'
+                              : 'bg-amber-900/30 border-amber-500/40 hover:border-amber-400'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-lg">{scenario.icon}</span>
+                            <span className="text-white text-sm font-medium truncate">{scenario.name}</span>
+                          </div>
+                          <p className="text-slate-400 text-xs line-clamp-2">{scenario.description}</p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
 

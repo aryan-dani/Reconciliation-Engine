@@ -6,6 +6,11 @@ from kafka import KafkaProducer
 from kafka.errors import NoBrokersAvailable, KafkaError
 from faker import Faker
 import logging
+import threading
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any
+from enum import Enum
 from kafka_config import build_kafka_common_kwargs, load_kafka_settings
 
 # Configure logging
@@ -18,6 +23,227 @@ TOPIC_PG, TOPIC_CBS, TOPIC_MOBILE = KAFKA_SETTINGS.topics
 API_URL = 'http://localhost:5000'
 
 fake = Faker('en_IN')  # Indian locale
+
+
+# ============================================================================
+# ADVANCED CHAOS SCENARIOS - Hackathon Special Effects
+# ============================================================================
+
+class ChaosScenario(Enum):
+    """Advanced chaos scenarios for dramatic demo effects."""
+    NONE = "none"
+    CBS_OUTAGE = "cbs_outage"              # CBS goes completely dark
+    MOBILE_OUTAGE = "mobile_outage"        # Mobile app crashes
+    NETWORK_PARTITION = "network_partition" # One region goes dark
+    GRADUAL_DEGRADATION = "gradual_degradation"  # CBS drifts over time
+    FRAUD_RING = "fraud_ring"              # Coordinated fraud burst
+    FLASH_CRASH = "flash_crash"            # Massive volume spike with errors
+    DATA_CORRUPTION = "data_corruption"    # Random field corruption
+    REPLAY_ATTACK = "replay_attack"        # Duplicate transactions
+
+
+@dataclass
+class ScenarioState:
+    """Tracks state for active chaos scenarios."""
+    active_scenario: ChaosScenario = ChaosScenario.NONE
+    start_time: float = 0.0
+    duration: float = 30.0  # Default 30 seconds
+    intensity: float = 1.0  # 0.0 to 1.0
+    
+    # Scenario-specific state
+    degradation_factor: float = 1.0  # For gradual degradation
+    affected_region: Optional[str] = None  # For network partition
+    fraud_ring_accounts: List[str] = field(default_factory=list)
+    replay_buffer: deque = field(default_factory=lambda: deque(maxlen=10))
+    
+    def is_active(self) -> bool:
+        if self.active_scenario == ChaosScenario.NONE:
+            return False
+        return time.time() - self.start_time < self.duration
+    
+    def time_remaining(self) -> float:
+        return max(0, self.duration - (time.time() - self.start_time))
+    
+    def progress(self) -> float:
+        """Returns 0.0 to 1.0 indicating scenario progress."""
+        if not self.is_active():
+            return 1.0
+        elapsed = time.time() - self.start_time
+        return min(1.0, elapsed / self.duration)
+
+
+# Global scenario state
+scenario_state = ScenarioState()
+scenario_lock = threading.Lock()
+
+
+def get_scenario_status() -> Dict[str, Any]:
+    """Get current scenario status for API."""
+    with scenario_lock:
+        return {
+            "active": scenario_state.is_active(),
+            "scenario": scenario_state.active_scenario.value,
+            "time_remaining": round(scenario_state.time_remaining(), 1),
+            "progress": round(scenario_state.progress() * 100, 1),
+            "intensity": scenario_state.intensity,
+            "affected_region": scenario_state.affected_region
+        }
+
+
+def trigger_scenario(scenario_name: str, duration: float = 30.0, intensity: float = 1.0, 
+                     region: Optional[str] = None) -> Dict[str, Any]:
+    """Trigger a chaos scenario."""
+    global scenario_state
+    
+    try:
+        scenario = ChaosScenario(scenario_name)
+    except ValueError:
+        return {"success": False, "error": f"Unknown scenario: {scenario_name}"}
+    
+    with scenario_lock:
+        scenario_state = ScenarioState(
+            active_scenario=scenario,
+            start_time=time.time(),
+            duration=duration,
+            intensity=intensity,
+            affected_region=region or random.choice(list(COUNTRY_CONFIG.keys())),
+            fraud_ring_accounts=[f"FRAUD{random.randint(1000, 9999)}" for _ in range(5)],
+            replay_buffer=deque(maxlen=10),
+            degradation_factor=1.0
+        )
+    
+    logger.warning(f"🚨 CHAOS SCENARIO TRIGGERED: {scenario.value} for {duration}s at {intensity*100:.0f}% intensity")
+    return {
+        "success": True,
+        "scenario": scenario.value,
+        "duration": duration,
+        "intensity": intensity,
+        "affected_region": scenario_state.affected_region
+    }
+
+
+def stop_scenario() -> Dict[str, Any]:
+    """Stop any active scenario."""
+    global scenario_state
+    
+    with scenario_lock:
+        old_scenario = scenario_state.active_scenario.value
+        scenario_state = ScenarioState()
+    
+    logger.info(f"✅ Chaos scenario stopped: {old_scenario}")
+    return {"success": True, "stopped": old_scenario}
+
+
+def apply_scenario_effects(transaction: dict, pg_data: dict, cbs_data: Optional[dict], 
+                           mobile_data: Optional[dict], original_log: str) -> tuple:
+    """Apply active scenario effects to transaction data."""
+    global scenario_state
+    
+    with scenario_lock:
+        if not scenario_state.is_active():
+            return pg_data, cbs_data, mobile_data, original_log
+        
+        scenario = scenario_state.active_scenario
+        intensity = scenario_state.intensity
+        progress = scenario_state.progress()
+        
+        # CBS Outage - CBS goes completely dark
+        if scenario == ChaosScenario.CBS_OUTAGE:
+            if random.random() < intensity:
+                return pg_data, None, mobile_data, "💥 CBS OUTAGE - System Down"
+        
+        # Mobile Outage - Mobile app crashes
+        elif scenario == ChaosScenario.MOBILE_OUTAGE:
+            if random.random() < intensity:
+                return pg_data, cbs_data, None, "📱 MOBILE OUTAGE - App Crash"
+        
+        # Network Partition - One region goes completely dark
+        elif scenario == ChaosScenario.NETWORK_PARTITION:
+            if transaction.get('country') == scenario_state.affected_region:
+                if random.random() < intensity:
+                    return pg_data, None, None, f"🌐 PARTITION - {scenario_state.affected_region} Isolated"
+        
+        # Gradual Degradation - CBS amounts drift over time
+        elif scenario == ChaosScenario.GRADUAL_DEGRADATION:
+            # Degradation increases over time
+            scenario_state.degradation_factor = 1.0 + (progress * 0.5 * intensity)  # Up to 50% drift
+            if cbs_data:
+                cbs_data = cbs_data.copy()
+                drift = random.uniform(0.9, 1.1) * scenario_state.degradation_factor
+                cbs_data['amount'] = round(cbs_data['amount'] * drift, 2)
+                if abs(drift - 1.0) > 0.1:
+                    return pg_data, cbs_data, mobile_data, f"📉 DEGRADATION - CBS Drift: {(drift-1)*100:+.1f}%"
+        
+        # Fraud Ring - Coordinated fraud with linked accounts
+        elif scenario == ChaosScenario.FRAUD_RING:
+            if random.random() < intensity * 0.5:  # 50% of transactions during fraud ring
+                fraud_account = random.choice(scenario_state.fraud_ring_accounts)
+                pg_data = pg_data.copy()
+                cbs_data = cbs_data.copy() if cbs_data else pg_data.copy()
+                mobile_data = mobile_data.copy() if mobile_data else pg_data.copy()
+                
+                # Inflate amounts dramatically in CBS
+                cbs_data['amount'] = round(pg_data['amount'] * random.uniform(10, 100), 2)
+                cbs_data['user_id'] = fraud_account
+                pg_data['user_id'] = fraud_account
+                mobile_data['user_id'] = fraud_account
+                
+                return pg_data, cbs_data, mobile_data, f"🕵️ FRAUD RING - Account: {fraud_account}"
+        
+        # Flash Crash - Massive volume with errors
+        elif scenario == ChaosScenario.FLASH_CRASH:
+            error_type = random.choices(
+                ['timeout', 'corruption', 'duplicate', 'missing'],
+                weights=[30, 25, 25, 20]
+            )[0]
+            
+            if error_type == 'timeout' and random.random() < intensity:
+                return pg_data, None, None, "⏱️ FLASH CRASH - Timeout"
+            elif error_type == 'corruption' and random.random() < intensity:
+                if cbs_data:
+                    cbs_data = cbs_data.copy()
+                    cbs_data['amount'] = round(random.uniform(0, 1000000), 2)
+                return pg_data, cbs_data, mobile_data, "💾 FLASH CRASH - Corruption"
+            elif error_type == 'missing' and random.random() < intensity:
+                return pg_data, None, mobile_data, "❌ FLASH CRASH - Missing"
+        
+        # Data Corruption - Random field corruption
+        elif scenario == ChaosScenario.DATA_CORRUPTION:
+            if random.random() < intensity * 0.7:
+                target = random.choice(['cbs', 'mobile', 'both'])
+                corruption_type = random.choice(['amount', 'status', 'timestamp', 'user_id'])
+                
+                if target in ['cbs', 'both'] and cbs_data:
+                    cbs_data = cbs_data.copy()
+                    if corruption_type == 'amount':
+                        cbs_data['amount'] = round(random.uniform(0, 999999), 2)
+                    elif corruption_type == 'status':
+                        cbs_data['status'] = random.choice(['CORRUPTED', 'ERROR', 'NULL', '???'])
+                    elif corruption_type == 'timestamp':
+                        cbs_data['timestamp'] = random.uniform(0, time.time() * 2)
+                    elif corruption_type == 'user_id':
+                        cbs_data['user_id'] = f"CORRUPT_{random.randint(0, 999)}"
+                
+                if target in ['mobile', 'both'] and mobile_data:
+                    mobile_data = mobile_data.copy()
+                    if corruption_type == 'amount':
+                        mobile_data['amount'] = round(random.uniform(0, 999999), 2)
+                
+                return pg_data, cbs_data, mobile_data, f"🔥 CORRUPTION - {corruption_type.upper()}"
+        
+        # Replay Attack - Duplicate transactions
+        elif scenario == ChaosScenario.REPLAY_ATTACK:
+            # Store current transaction for replay
+            scenario_state.replay_buffer.append(pg_data.copy())
+            
+            if len(scenario_state.replay_buffer) > 3 and random.random() < intensity * 0.6:
+                # Replay an old transaction
+                replay_tx = random.choice(list(scenario_state.replay_buffer))
+                replay_tx = replay_tx.copy()
+                replay_tx['timestamp'] = time.time()  # Update timestamp
+                return replay_tx, replay_tx, replay_tx, f"🔁 REPLAY ATTACK - Duplicate TX"
+    
+    return pg_data, cbs_data, mobile_data, original_log
 
 def create_kafka_producer(max_retries=10, retry_delay=3):
     """Create Kafka producer with retry logic."""
@@ -134,7 +360,21 @@ def get_chaos_status():
     try:
         res = requests.get(f'{API_URL}/api/chaos/status', timeout=1)
         if res.status_code == 200:
-            return res.json()
+            data = res.json()
+            # Also check for active scenario
+            if 'active_scenario' in data and data['active_scenario']:
+                scenario = data['active_scenario']
+                # Update local scenario state
+                trigger_scenario(
+                    scenario.get('scenario', 'none'),
+                    scenario.get('duration', 30),
+                    scenario.get('intensity', 0.8),
+                    scenario.get('region')
+                )
+            elif scenario_state.is_active():
+                # Server says no scenario but we have one active - stop it
+                stop_scenario()
+            return data
     except requests.exceptions.RequestException:
         pass
     return {"running": True, "speed": 1.0, "chaos_rate": 40}
@@ -331,6 +571,11 @@ try:
         
         chaos_rate = cached_status.get("chaos_rate", 40)
         pg_payload, cbs_payload, mobile_payload, log_msg = inject_chaos(base_txn, chaos_rate)
+        
+        # Apply any active scenario effects (HACKATHON SPECIAL!)
+        pg_payload, cbs_payload, mobile_payload, log_msg = apply_scenario_effects(
+            base_txn, pg_payload, cbs_payload, mobile_payload, log_msg
+        )
         
         try:
             if producer is None:
