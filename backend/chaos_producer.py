@@ -6,7 +6,7 @@ from kafka import KafkaProducer
 from kafka.errors import NoBrokersAvailable, KafkaError
 from faker import Faker
 import logging
-from kafka_config import build_kafka_common_kwargs, load_kafka_settings, validate_event_hubs_kafka_settings
+from kafka_config import build_kafka_common_kwargs, load_kafka_settings
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -21,10 +21,6 @@ fake = Faker('en_IN')  # Indian locale
 
 def create_kafka_producer(max_retries=10, retry_delay=3):
     """Create Kafka producer with retry logic."""
-
-    validation_error = validate_event_hubs_kafka_settings(KAFKA_SETTINGS)
-    if validation_error:
-        raise RuntimeError(f"Kafka/Event Hubs configuration error: {validation_error}")
 
     for attempt in range(max_retries):
         try:

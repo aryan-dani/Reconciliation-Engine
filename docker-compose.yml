@@ -1,10 +1,8 @@
 version: "3.8"
 
 # Real-Time 3-Way Transaction Reconciliation Engine
-# This docker-compose sets up Kafka for streaming transactions from:
-# - Payment Gateway (pg-transactions)
-# - Core Banking System (cbs-transactions)
-# - Mobile Banking App (mobile-transactions)
+# Services: Zookeeper, Kafka, Backend (Reconciler), Frontend (React)
+# Run chaos_producer.py separately on the host: python backend/chaos_producer.py
 
 services:
   zookeeper:
@@ -32,10 +30,10 @@ services:
       KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      # Auto-create topics for 3-way reconciliation
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     healthcheck:
       test:
@@ -50,14 +48,25 @@ services:
       timeout: 10s
       retries: 5
 
-  # Optional: Kafka UI for debugging
-  # kafka-ui:
-  #   image: provectuslabs/kafka-ui:latest
-  #   container_name: kafka-ui
-  #   ports:
-  #     - "8080:8080"
-  #   depends_on:
-  #     - kafka
-  #   environment:
-  #     KAFKA_CLUSTERS_0_NAME: local
-  #     KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+  backend:
+    build: ./backend
+    container_name: reconciler
+    ports:
+      - "5000:5000"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: dashboard
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    environment:
+      WATCHPACK_POLLING: "true"
+    restart: unless-stopped

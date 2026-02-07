@@ -17,12 +17,8 @@ from typing import Optional, Any
 from sqlalchemy import create_engine, Column, String, Float, Integer, JSON, func, text, text
 from sqlalchemy.orm import sessionmaker, declarative_base, Mapped, mapped_column
 import jwt
-from kafka_config import build_kafka_common_kwargs, load_kafka_settings, validate_event_hubs_kafka_settings
-from foundry_responses_client import generate_reconciliation_insight, foundry_is_configured, probe_foundry_status
-from content_safety_client import analyze_text_safety, contentsafety_is_configured
-
-import os
-from urllib.parse import urlparse
+from kafka_config import build_kafka_common_kwargs, load_kafka_settings
+from anomaly_engine import engine as anomaly_engine
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -32,195 +28,6 @@ WEBHOOK_URL = "YOUR_DISCORD_OR_SLACK_WEBHOOK_URL"
 
 KAFKA_SETTINGS = load_kafka_settings()
 
-
-def _redact_endpoint(endpoint: Optional[str]) -> Optional[str]:
-    if not endpoint:
-        return None
-    try:
-        parsed = urlparse(endpoint)
-        if parsed.scheme and parsed.netloc:
-            return f"{parsed.scheme}://{parsed.netloc}"
-        return endpoint
-    except Exception:
-        return endpoint
-
-
-AI_RUNTIME = {
-    "configured": foundry_is_configured(),
-    "endpoint": _redact_endpoint(os.getenv("AZURE_FOUNDRY_ENDPOINT")),
-    "deployment": (os.getenv("AZURE_FOUNDRY_DEPLOYMENT") or "").strip() or None,
-    "last_ok": None,
-    "last_error": None,
-    "last_trace_id": None,
-    "last_updated_at": None,
-    "last_probe": None,
-    "last_probe_at": None,
-}
-
-
-SAFETY_RUNTIME = {
-    "configured": contentsafety_is_configured(),
-    "endpoint": _redact_endpoint(os.getenv("AZURE_CONTENT_SAFETY_ENDPOINT")),
-    "last_ok": None,
-    "last_error": None,
-    "last_trace_id": None,
-    "last_updated_at": None,
-}
-
-
-def _record_safety_runtime(trace_id: str, result: dict) -> None:
-    SAFETY_RUNTIME["configured"] = contentsafety_is_configured()
-    SAFETY_RUNTIME["last_trace_id"] = trace_id
-    SAFETY_RUNTIME["last_updated_at"] = time.time()
-
-    if result.get("enabled") is False:
-        SAFETY_RUNTIME["last_ok"] = False
-        SAFETY_RUNTIME["last_error"] = result.get("error_code") or result.get("hint")
-        return
-
-    if result.get("ok") is True and result.get("allowed") is True:
-        SAFETY_RUNTIME["last_ok"] = True
-        SAFETY_RUNTIME["last_error"] = None
-        return
-
-    SAFETY_RUNTIME["last_ok"] = False
-    SAFETY_RUNTIME["last_error"] = result.get("error_code") or result.get("error_type") or result.get("hint")
-
-
-def _ic_require_ai_services() -> bool:
-    raw = (os.getenv("IC_REQUIRE_AI_SERVICES") or "").strip().lower()
-    return raw in {"1", "true", "yes", "y", "on"}
-
-
-def _guard_ai_with_content_safety(trace_id: str, insight: dict) -> dict:
-    """Run Content Safety on AI output and block unsafe content."""
-
-    analysis_text = insight.get("analysis")
-    if not isinstance(analysis_text, str) or not analysis_text.strip():
-        return insight
-
-    safety = analyze_text_safety(trace_id=trace_id, text=analysis_text)
-    insight["content_safety"] = safety
-    _record_safety_runtime(trace_id, safety)
-
-    if safety.get("enabled") is True and safety.get("ok") is True and safety.get("allowed") is False:
-        insight["analysis_raw"] = insight.get("analysis")
-        insight["analysis"] = "Blocked by Azure AI Content Safety policy."
-        insight["ok"] = False
-        insight["error_code"] = "CONTENT_SAFETY_BLOCKED"
-        insight["error_type"] = "ContentSafetyBlocked"
-        insight["hint"] = {"max_severity": safety.get("max_severity")}
-        insight["raw"] = None
-
-    return insight
-
-
-def _generate_ai_insight(trace_id: str, primary_txn: dict, mismatch_context: dict) -> dict:
-    """Generate Foundry insight and apply Content Safety guardrails if configured."""
-
-    if _ai_remote_allowed():
-        insight = generate_reconciliation_insight(
-            trace_id=trace_id,
-            primary_txn=primary_txn or {},
-            mismatch_context=mismatch_context or {},
-        )
-    else:
-        insight = _ai_skipped_payload(trace_id)
-
-    # Apply Content Safety if configured (optional enhancement)
-    if insight.get("ok") is True and contentsafety_is_configured():
-        insight = _guard_ai_with_content_safety(trace_id, insight)
-
-    _record_ai_runtime(trace_id, insight)
-    _log_ai_insight(trace_id, insight)
-    return insight
-
-
-def _record_ai_runtime(trace_id: str, insight: dict) -> None:
-    AI_RUNTIME["configured"] = foundry_is_configured()
-    AI_RUNTIME["last_trace_id"] = trace_id
-    AI_RUNTIME["last_updated_at"] = time.time()
-    if insight.get("ok") is True:
-        AI_RUNTIME["last_ok"] = True
-        AI_RUNTIME["last_error"] = None
-        return
-    if insight.get("enabled") is False:
-        AI_RUNTIME["last_ok"] = False
-        AI_RUNTIME["last_error"] = insight.get("error_code") or insight.get("error")
-        return
-    AI_RUNTIME["last_ok"] = False
-    AI_RUNTIME["last_error"] = insight.get("error_code") or insight.get("error_type") or insight.get("error")
-
-
-def _log_ai_insight(trace_id: str, insight: dict) -> None:
-    if insight.get("ok") is True:
-        logger.info(f"🧠 Foundry Responses insight OK for tx_id={trace_id}")
-        return
-
-    # Distinguish not configured vs runtime error.
-    if insight.get("enabled") is False:
-        logger.warning(f"🧠 Foundry Responses DISABLED for tx_id={trace_id}: {insight.get('error_code') or insight.get('error')}")
-        return
-
-    status_code = insight.get("status_code")
-    error_type = insight.get("error_type") or insight.get("error_code") or insight.get("error")
-    hint = insight.get("hint")
-    if hint:
-        logger.warning(
-            f"🧠 Foundry Responses FAILED for tx_id={trace_id}: {error_type} (status={status_code}) | {hint}"
-        )
-    else:
-        logger.warning(f"🧠 Foundry Responses FAILED for tx_id={trace_id}: {error_type} (status={status_code})")
-
-
-def _probe_ai_cached(ttl_seconds: int = 30) -> dict:
-    """Probe Foundry endpoint auth + deployment existence with a small Responses call.
-
-    Cached to avoid unnecessary token spend and noisy health polling.
-    """
-
-    now = time.time()
-    last_at = AI_RUNTIME.get("last_probe_at")
-    if isinstance(last_at, (int, float)) and (now - last_at) < ttl_seconds and AI_RUNTIME.get("last_probe"):
-        return AI_RUNTIME["last_probe"]
-
-    result = probe_foundry_status()
-    AI_RUNTIME["last_probe"] = result
-    AI_RUNTIME["last_probe_at"] = now
-    return result
-
-
-def _ai_remote_allowed() -> bool:
-    """Avoid hammering Foundry when we already know auth/deployment is misconfigured."""
-
-    if not foundry_is_configured():
-        return False
-
-    probe = _probe_ai_cached()
-    if probe.get("ok") is True:
-        return True
-
-    # Fatal misconfig: don't retry on every mismatch.
-    if probe.get("error_code") in {"AUTHENTICATION_MISCONFIG", "DEPLOYMENT_MISMATCH"}:
-        return False
-
-    # Transient/unknown errors: allow attempts (caller will handle failures).
-    return True
-
-
-def _ai_skipped_payload(trace_id: str) -> dict:
-    probe = _probe_ai_cached()
-    return {
-        "enabled": True,
-        "ok": False,
-        "analysis": None,
-        "raw": None,
-        "status_code": None,
-        "error_code": "AI_SKIPPED_DUE_TO_PROBE",
-        "error_type": None,
-        "hint": probe,
-        "generated_at": time.time(),
-    }
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'super_secret_cybersecurity_key_123' 
@@ -275,7 +82,7 @@ class Transaction(Base):
     resolved_at: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # Track resolution time
 
 
-class AiInsight(Base):
+class AnalysisInsight(Base):
     __tablename__ = 'ai_insights'
     tx_id: Mapped[str] = mapped_column(String, primary_key=True)
     payload: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
@@ -285,18 +92,18 @@ Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
 
 
-def upsert_ai_insight(session, tx_id: str, payload: dict) -> None:
-    existing = session.query(AiInsight).filter_by(tx_id=tx_id).first()
+def upsert_analysis(session, tx_id: str, payload: dict) -> None:
+    existing = session.query(AnalysisInsight).filter_by(tx_id=tx_id).first()
     if existing is None:
-        session.add(AiInsight(tx_id=tx_id, payload=payload, created_at=time.time()))
+        session.add(AnalysisInsight(tx_id=tx_id, payload=payload, created_at=time.time()))
     else:
         existing.payload = payload
         existing.created_at = time.time()
     session.commit()
 
 
-def get_ai_insight(session, tx_id: str) -> Optional[dict]:
-    row = session.query(AiInsight).filter_by(tx_id=tx_id).first()
+def get_analysis(session, tx_id: str) -> Optional[dict]:
+    row = session.query(AnalysisInsight).filter_by(tx_id=tx_id).first()
     if row and row.payload:
         return row.payload
     return None
@@ -324,17 +131,6 @@ def get_kafka_consumer():
     """Create Kafka consumer with retry logic."""
     max_retries = 5
     retry_delay = 2
-
-    validation_error = validate_event_hubs_kafka_settings(KAFKA_SETTINGS)
-    if validation_error:
-        CONNECTION_STATE["kafka_connected"] = False
-        CONNECTION_STATE["kafka_last_error"] = validation_error
-        logger.error(f"❌ Kafka/Event Hubs configuration error: {validation_error}")
-        socketio.emit(
-            'system_status',
-            {'kafka_connected': False, 'message': 'Kafka misconfigured', 'error': validation_error},
-        )
-        return None
 
     def _wait_for_broker_metadata(consumer: KafkaConsumer, timeout_seconds: float = 5.0) -> bool:
         deadline = time.time() + timeout_seconds
@@ -367,7 +163,7 @@ def get_kafka_consumer():
             if not _wait_for_broker_metadata(consumer):
                 # Treat as not connected; this commonly happens when SASL auth fails.
                 raise NoBrokersAvailable(
-                    "Connected socket but no broker metadata received. Check SASL credentials and Event Hubs configuration."
+                    "Connected socket but no broker metadata received. Check SASL credentials and Kafka configuration."
                 )
 
             CONNECTION_STATE["kafka_connected"] = True
@@ -392,47 +188,6 @@ def get_kafka_consumer():
                 time.sleep(retry_delay)
     
     return None
-
-def get_ai_analysis(pg, cbs, mobile=None):
-    """
-    Enhanced AI model analyzing the discrepancy across all three sources.
-    Returns: (Analysis String, Risk Score 0-100, Mismatch Type)
-    """
-    sources_present = sum([1 for s in [pg, cbs, mobile] if s])
-    
-    if sources_present == 1:
-        return "CRITICAL DATA LOSS: Transaction exists in only one system. Severe synchronization failure.", 95, "DATA_LOSS"
-    
-    if not cbs:
-        return "CBS BLACKHOLE: Transaction vanished in Core Banking. Potential database failure or network partition.", 90, "MISSING_CBS"
-    
-    if not mobile:
-        return "MOBILE SYNC FAILURE: Transaction not replicated to mobile banking. API gateway issue likely.", 60, "MISSING_MOBILE"
-    
-    # Compare amounts across all available sources
-    amounts = [s['amount'] for s in [pg, cbs, mobile] if s]
-    if len(set(amounts)) > 1:
-        max_diff = max(amounts) - min(amounts)
-        ratio = max_diff / min(amounts) if min(amounts) > 0 else 0
-        
-        if ratio > 10.0:
-            return "🚨 FRAUD ALERT: Massive amount discrepancy across systems. High probability of injection attack or internal fraud.", 100, "FRAUD"
-        elif ratio > 1.0:
-            return "SIGNIFICANT VARIANCE: Large amount mismatch detected. Possible currency conversion error or duplicate posting.", 75, "AMOUNT_MISMATCH"
-        elif ratio > 0.0:
-            return "SKIMMING DETECTED: Small amount variance. Possible rounding error, fee miscalculation, or malicious skimming.", 40, "SKIMMING"
-    
-    # Compare statuses
-    statuses = [s['status'] for s in [pg, cbs, mobile] if s]
-    if len(set(statuses)) > 1:
-        return "STATE DRIFT: Transaction status mismatch across systems. Race condition or webhook latency detected.", 30, "STATUS_MISMATCH"
-    
-    # Compare timestamps
-    timestamps = [s['timestamp'] for s in [pg, cbs, mobile] if s]
-    if max(timestamps) - min(timestamps) > 5.0:
-        return "TIMESTAMP DRIFT: Significant time difference between system records. Network latency or clock skew.", 20, "TIMESTAMP_DRIFT"
-        
-    return "Unknown Anomaly", 50, "UNKNOWN"
 
 def emit_alert(txn_data, message, severity, analysis=None, risk_score=0, mismatch_type=None, ai=None):
     if not txn_data: return
@@ -552,7 +307,7 @@ def auto_mitigate(session, txn, issue_type):
     return False
 
 def reconcile_transaction(session, tx_id):
-    """Enhanced 3-way reconciliation logic comparing PG, CBS, and Mobile data."""
+    """Enhanced 3-way reconciliation with real-time anomaly detection engine."""
     txn = session.query(Transaction).filter_by(tx_id=tx_id).first()
 
     if not txn:
@@ -569,26 +324,21 @@ def reconcile_transaction(session, tx_id):
 
     primary_data = pg or cbs or mobile
 
+    # Run the anomaly detection engine
+    insight = anomaly_engine.analyze_transaction(tx_id, pg, cbs, mobile)
+    risk_score = insight.get("risk_score", 0)
+    analysis = insight.get("analysis", "")
+    risk_level = insight.get("risk_level", "LOW")
+
     # Check for amount mismatches across all sources
     amounts = [s['amount'] for s in [pg, cbs, mobile] if s]
     if len(set(amounts)) > 1:
         txn.status = "MISMATCH"
         txn.mismatch_type = "AMOUNT"
         session.commit()
-        analysis, risk, mtype = get_ai_analysis(pg, cbs, mobile)
-        insight = _generate_ai_insight(
-            tx_id,
-            primary_data or {},
-            {
-                "rule_analysis": analysis,
-                "risk_score": risk,
-                "mismatch_type": mtype,
-                "sources_present": sources_present,
-                "amounts": amounts,
-            },
-        )
-        upsert_ai_insight(session, tx_id, insight)
-        emit_alert(primary_data, "⚠️ CRITICAL: AMOUNT MISMATCH DETECTED", "error", analysis, risk, mtype, ai=insight)
+        mtype = "FRAUD" if risk_score >= 90 else "AMOUNT_MISMATCH"
+        upsert_analysis(session, tx_id, insight)
+        emit_alert(primary_data, "⚠️ CRITICAL: AMOUNT MISMATCH DETECTED", "error", analysis, risk_score, mtype, ai=insight)
         auto_mitigate(session, txn, 'AMOUNT_MISMATCH')
         return None, None, None, 0
 
@@ -598,20 +348,8 @@ def reconcile_transaction(session, tx_id):
         txn.status = "WARNING"
         txn.mismatch_type = "STATUS"
         session.commit()
-        analysis, risk, mtype = get_ai_analysis(pg, cbs, mobile)
-        insight = _generate_ai_insight(
-            tx_id,
-            primary_data or {},
-            {
-                "rule_analysis": analysis,
-                "risk_score": risk,
-                "mismatch_type": mtype,
-                "sources_present": sources_present,
-                "statuses": statuses,
-            },
-        )
-        upsert_ai_insight(session, tx_id, insight)
-        emit_alert(primary_data, "⚠️ STATE ERROR: Status Mismatch", "warning", analysis, risk, mtype, ai=insight)
+        upsert_analysis(session, tx_id, insight)
+        emit_alert(primary_data, "⚠️ STATE ERROR: Status Mismatch", "warning", analysis, risk_score, "STATUS_MISMATCH", ai=insight)
         auto_mitigate(session, txn, 'STATUS_MISMATCH')
         return None, None, None, 0
 
@@ -621,20 +359,8 @@ def reconcile_transaction(session, tx_id):
         txn.status = "WARNING"
         txn.mismatch_type = "TIMESTAMP"
         session.commit()
-        analysis = "Significant latency detected between system records."
-        insight = _generate_ai_insight(
-            tx_id,
-            primary_data or {},
-            {
-                "rule_analysis": analysis,
-                "risk_score": 20,
-                "mismatch_type": "TIMESTAMP_DRIFT",
-                "sources_present": sources_present,
-                "timestamps": timestamps,
-            },
-        )
-        upsert_ai_insight(session, tx_id, insight)
-        emit_alert(primary_data, "⚠️ TIMEOUT: Timestamp Drift > 5s", "warning", analysis, 20, "TIMESTAMP_DRIFT", ai=insight)
+        upsert_analysis(session, tx_id, insight)
+        emit_alert(primary_data, "⚠️ TIMEOUT: Timestamp Drift > 5s", "warning", analysis, risk_score, "TIMESTAMP_DRIFT", ai=insight)
         return None, None, None, 0
 
     # All checks passed - transaction is reconciled
@@ -656,6 +382,11 @@ def check_missing_transactions():
     for txn in stuck_txns:
         primary_data = txn.pg_data or txn.cbs_data or txn.mobile_data
         
+        # Run anomaly engine on the incomplete transaction
+        insight = anomaly_engine.analyze_transaction(txn.tx_id, txn.pg_data, txn.cbs_data, txn.mobile_data)
+        analysis = insight.get("analysis", "")
+        risk_score = insight.get("risk_score", 50)
+        
         missing_systems = []
         if txn.cbs_data is None:
             missing_systems.append("CBS")
@@ -665,82 +396,32 @@ def check_missing_transactions():
             missing_systems.append("PG")
         
         if len(missing_systems) >= 2:
-            # Critical: Missing in multiple systems
             txn.status = "CRITICAL_MISSING"
             txn.mismatch_type = "MULTI_MISSING"
-            analysis, risk, mtype = get_ai_analysis(txn.pg_data, txn.cbs_data, txn.mobile_data)
-            insight = _generate_ai_insight(
-                txn.tx_id,
-                primary_data or {},
-                {
-                    "rule_analysis": analysis,
-                    "risk_score": risk,
-                    "mismatch_type": mtype,
-                    "missing_systems": missing_systems,
-                },
-            )
-            upsert_ai_insight(session, txn.tx_id, insight)
-            emit_alert(primary_data, f"🔥 CRITICAL: Missing in {', '.join(missing_systems)}", "error", analysis, risk, mtype, ai=insight)
+            upsert_analysis(session, txn.tx_id, insight)
+            emit_alert(primary_data, f"🔥 CRITICAL: Missing in {', '.join(missing_systems)}", "error", analysis, risk_score, "DATA_LOSS", ai=insight)
             send_ops_alert("Multi-System Data Loss", f"Transaction {txn.tx_id} missing in {missing_systems}", 15158332)
             
         elif not txn.cbs_data:
             txn.status = "MISSING_CBS"
             txn.mismatch_type = "MISSING_CBS"
-            analysis, risk, mtype = get_ai_analysis(txn.pg_data, None, txn.mobile_data)
-            insight = _generate_ai_insight(
-                txn.tx_id,
-                primary_data or {},
-                {
-                    "rule_analysis": analysis,
-                    "risk_score": risk,
-                    "mismatch_type": mtype,
-                    "missing_systems": ["CBS"],
-                },
-            )
-            upsert_ai_insight(session, txn.tx_id, insight)
-            emit_alert(primary_data, "❌ MISSING IN CBS (Core Banking Data Loss)", "error", analysis, risk, mtype, ai=insight)
+            upsert_analysis(session, txn.tx_id, insight)
+            emit_alert(primary_data, "❌ MISSING IN CBS (Core Banking Data Loss)", "error", analysis, risk_score, "MISSING_CBS", ai=insight)
             send_ops_alert("Data Loss Detected", f"Transaction {txn.tx_id} missing in Core Banking", 15158332)
             auto_mitigate(session, txn, 'MISSING_CBS')
             
         elif not txn.mobile_data:
             txn.status = "MISSING_MOBILE"
             txn.mismatch_type = "MISSING_MOBILE"
-            analysis = "Transaction not replicated to mobile banking system."
-            insight = _generate_ai_insight(
-                txn.tx_id,
-                primary_data or {},
-                {
-                    "rule_analysis": analysis,
-                    "risk_score": 60,
-                    "mismatch_type": "MISSING_MOBILE",
-                    "missing_systems": ["MOBILE"],
-                },
-            )
-            upsert_ai_insight(session, txn.tx_id, insight)
-            emit_alert(primary_data, "📱 MISSING IN MOBILE (Sync Failure)", "warning", analysis, 60, "MISSING_MOBILE", ai=insight)
+            upsert_analysis(session, txn.tx_id, insight)
+            emit_alert(primary_data, "📱 MISSING IN MOBILE (Sync Failure)", "warning", analysis, risk_score, "MISSING_MOBILE", ai=insight)
             auto_mitigate(session, txn, 'MISSING_MOBILE')
             
         elif not txn.pg_data:
             txn.status = "MISSING_PG"
             txn.mismatch_type = "GHOST"
-            analysis = "Transaction exists in downstream systems but not in Payment Gateway. Potential injection."
-            if _ai_remote_allowed():
-                insight = generate_reconciliation_insight(
-                    trace_id=txn.tx_id,
-                    primary_txn=primary_data or {},
-                    mismatch_context={
-                        "rule_analysis": analysis,
-                        "risk_score": 85,
-                        "mismatch_type": "GHOST",
-                        "missing_systems": ["PG"],
-                    },
-                )
-            else:
-                insight = _ai_skipped_payload(txn.tx_id)
-            _record_ai_runtime(txn.tx_id, insight)
-            _log_ai_insight(txn.tx_id, insight)
-            upsert_ai_insight(session, txn.tx_id, insight)
-            emit_alert(primary_data, "👻 GHOST TRANSACTION (Missing in PG)", "error", analysis, 85, "GHOST", ai=insight)
+            upsert_analysis(session, txn.tx_id, insight)
+            emit_alert(primary_data, "👻 GHOST TRANSACTION (Missing in PG)", "error", analysis, risk_score, "GHOST", ai=insight)
 
         session.commit()
     session.close()
@@ -749,30 +430,7 @@ def consumer_loop():
     """Resilient consumer loop with auto-reconnection."""
     logger.info("🎧 Enterprise 3-Way Reconciler starting...")
     logger.info(f"📊 Will listen on: {', '.join(KAFKA_SETTINGS.topics)}")
-
-    # IC_REQUIRE_AI_SERVICES only requires Foundry; Content Safety is optional
-    if _ic_require_ai_services():
-        if not foundry_is_configured():
-            logger.error(
-                "❌ IC_REQUIRE_AI_SERVICES=1 but Azure AI Foundry is not configured. "
-                "Set AZURE_FOUNDRY_ENDPOINT, AZURE_FOUNDRY_API_KEY, AZURE_FOUNDRY_DEPLOYMENT."
-            )
-            raise SystemExit(2)
-        logger.info("✅ Imagine Cup mode: AI services required (Foundry configured, Content Safety optional)")
-
-    if AI_RUNTIME["configured"]:
-        logger.info(
-            f"🧠 Foundry Responses ENABLED | endpoint={AI_RUNTIME['endpoint']} | deployment={AI_RUNTIME['deployment']}"
-        )
-    else:
-        logger.warning(
-            "🧠 Foundry Responses DISABLED | set AZURE_FOUNDRY_ENDPOINT, AZURE_FOUNDRY_API_KEY, AZURE_FOUNDRY_DEPLOYMENT"
-        )
-
-    if SAFETY_RUNTIME["configured"]:
-        logger.info(f"🛡️ Content Safety ENABLED | endpoint={SAFETY_RUNTIME['endpoint']}")
-    else:
-        logger.info("🛡️ Content Safety DISABLED (optional) | set AZURE_CONTENT_SAFETY_ENDPOINT, AZURE_CONTENT_SAFETY_API_KEY to enable")
+    logger.info("🔬 Anomaly Detection Engine: ACTIVE (statistical + velocity + pattern analysis)")
     
     while True:
         consumer = get_kafka_consumer()
@@ -1022,53 +680,16 @@ def health_check():
         'database': {
             'connected': db_healthy
         },
-        'ai': {
-            'configured': AI_RUNTIME.get('configured'),
-            'endpoint': AI_RUNTIME.get('endpoint'),
-            'deployment': AI_RUNTIME.get('deployment'),
-            'last_ok': AI_RUNTIME.get('last_ok'),
-            'last_error': AI_RUNTIME.get('last_error'),
-            'last_trace_id': AI_RUNTIME.get('last_trace_id'),
-            'last_updated_at': AI_RUNTIME.get('last_updated_at'),
-            'probe': _probe_ai_cached(),
-        },
-        'ai_runtime': {
-            'configured': AI_RUNTIME.get('configured'),
-            'endpoint': AI_RUNTIME.get('endpoint'),
-            'deployment': AI_RUNTIME.get('deployment'),
-            'last_ok': AI_RUNTIME.get('last_ok'),
-        },
-        'safety_runtime': {
-            'configured': SAFETY_RUNTIME.get('configured'),
-            'endpoint': SAFETY_RUNTIME.get('endpoint'),
-            'last_ok': SAFETY_RUNTIME.get('last_ok'),
-        },
-        'ic_require_ai_services': _ic_require_ai_services(),
+        'anomaly_engine': anomaly_engine.get_engine_stats(),
         'uptime': f"{hours}h {minutes}m {seconds}s",
         'uptime_seconds': uptime
     })
 
 
-@app.route('/api/ai/status', methods=['GET'])
-def ai_status():
-    """Health endpoint for Foundry Responses integration (no auth).
-
-    Validates:
-    - Foundry endpoint reachable
-    - deployment exists
-    - key authorized
-    """
-    probe = _probe_ai_cached()
-    return jsonify({
-        'configured': AI_RUNTIME.get('configured'),
-        'endpoint': AI_RUNTIME.get('endpoint'),
-        'deployment': AI_RUNTIME.get('deployment'),
-        'last_ok': AI_RUNTIME.get('last_ok'),
-        'last_error': AI_RUNTIME.get('last_error'),
-        'last_trace_id': AI_RUNTIME.get('last_trace_id'),
-        'last_updated_at': AI_RUNTIME.get('last_updated_at'),
-        'probe': probe,
-    })
+@app.route('/api/engine/status', methods=['GET'])
+def engine_status():
+    """Health endpoint for the Anomaly Detection Engine (no auth)."""
+    return jsonify(anomaly_engine.get_engine_stats())
 
 
 @app.route('/api/chaos/start', methods=['POST'])
@@ -1123,7 +744,7 @@ def get_transaction_detail(tx_id):
             'core_banking': txn.cbs_data,
             'mobile_banking': txn.mobile_data
         },
-        'ai_insight': get_ai_insight(session, tx_id),
+        'ai_insight': get_analysis(session, tx_id),
         'discrepancies': []
     }
     
@@ -1275,6 +896,6 @@ if __name__ == '__main__':
     threading.Thread(target=consumer_loop, daemon=True).start()
     
     
-    print("🚀 LedgerFlow Engine v3.0 (3-Way Reconciliation) Live on Port 5000")
-    print("📊 Features: 3-Way Matching | AI Analysis | Auto-Mitigation | Geo-Risk")
-    socketio.run(app, port=5000)
+    print("🚀 LedgerFlow Engine v4.0 (3-Way Reconciliation) Live on Port 5000")
+    print("📊 Features: 3-Way Matching | Anomaly Detection Engine | Auto-Mitigation | Geo-Risk")
+    socketio.run(app, host="0.0.0.0", port=5000, allow_unsafe_werkzeug=True)

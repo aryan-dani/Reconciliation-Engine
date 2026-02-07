@@ -46,60 +46,13 @@ class KafkaSettings:
     ssl_cafile: Optional[str] = None
 
 
-def validate_event_hubs_kafka_settings(settings: KafkaSettings) -> Optional[str]:
-    """Return a human-friendly error string if SASL settings look invalid.
-
-    This catches the most common misconfigurations for Azure Event Hubs' Kafka endpoint.
-    Returns None when settings look plausible.
-    """
-
-    if (settings.security_protocol or "").upper() != "SASL_SSL":
-        return None
-    if (settings.sasl_mechanism or "").upper() != "PLAIN":
-        return "KAFKA_SASL_MECHANISM must be PLAIN for Event Hubs Kafka endpoint."
-
-    username = (settings.sasl_plain_username or "").strip()
-    password = (settings.sasl_plain_password or "").strip()
-
-    if not username:
-        return "KAFKA_SASL_USERNAME is required for SASL_SSL (use $ConnectionString)."
-    if username != "$ConnectionString":
-        return "KAFKA_SASL_USERNAME must be exactly $ConnectionString for Event Hubs Kafka endpoint."
-
-    if not password:
-        return "KAFKA_SASL_PASSWORD is required for SASL_SSL (set it to the Event Hubs connection string)."
-
-    # Detect placeholder values that commonly get left behind.
-    lowered = password.lower()
-    if "<" in password or ">" in password or "changeme" in lowered or "your_" in lowered:
-        return "KAFKA_SASL_PASSWORD looks like a placeholder. Paste the full Event Hubs connection string (Endpoint=sb://...;SharedAccessKeyName=...;SharedAccessKey=...)."
-
-    # Detect common wrong credential type: SAS token instead of connection string.
-    if lowered.startswith("sharedaccesssignature") or "sig=" in lowered and "sr=" in lowered:
-        return "KAFKA_SASL_PASSWORD appears to be a SAS token. Event Hubs Kafka requires the full connection string, not a SAS token."
-
-    required_parts = ["endpoint=sb://", "sharedaccesskeyname=", "sharedaccesskey="]
-    if not all(p in lowered for p in required_parts):
-        return (
-            "KAFKA_SASL_PASSWORD does not look like an Event Hubs connection string. "
-            "Expected: Endpoint=sb://<namespace>.servicebus.windows.net/;SharedAccessKeyName=<name>;SharedAccessKey=<key>[;EntityPath=<eventhub>]"
-        )
-
-    return None
 
 
 def load_kafka_settings() -> KafkaSettings:
-    """Load Kafka/Event Hubs settings from environment variables.
+    """Load Kafka settings from environment variables.
 
     Local Kafka default:
       - KAFKA_BOOTSTRAP_SERVERS=localhost:9092
-
-    Azure Event Hubs (Kafka endpoint) typical:
-      - KAFKA_BOOTSTRAP_SERVERS=<namespace>.servicebus.windows.net:9093
-      - KAFKA_SECURITY_PROTOCOL=SASL_SSL
-      - KAFKA_SASL_MECHANISM=PLAIN
-      - KAFKA_SASL_USERNAME=$ConnectionString
-      - KAFKA_SASL_PASSWORD=<Event Hubs connection string>
     """
 
     _try_load_dotenv()
@@ -121,7 +74,7 @@ def load_kafka_settings() -> KafkaSettings:
 
 
 def build_kafka_common_kwargs(settings: KafkaSettings) -> Dict[str, Any]:
-    """Build kwargs for kafka-python clients, supporting SASL_SSL when configured."""
+    """Build kwargs for kafka-python clients, supporting SASL when configured."""
     kwargs: Dict[str, Any] = {
         "bootstrap_servers": settings.bootstrap_servers,
     }

@@ -49,8 +49,7 @@ import {
   Cpu,
   HardDrive,
   Bot,
-  ShieldCheck,
-  ShieldAlert,
+
   Sparkles,
   ChevronDown,
   ChevronUp,
@@ -165,119 +164,12 @@ const MISMATCH_COLORS = {
   UNKNOWN: "#64748b",
 };
 
-// Content Safety Severity Badge Component
-const ContentSafetyBadge = ({ safety }) => {
-  if (!safety || safety.enabled === false) {
-    return (
-      <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium bg-slate-700/50 text-slate-400 border border-slate-600/50">
-        <ShieldAlert size={12} />
-        Safety Disabled
-      </span>
-    );
-  }
-
-  if (!safety.ok) {
-    return (
-      <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium bg-amber-500/20 text-amber-400 border border-amber-500/30">
-        <ShieldAlert size={12} />
-        Check Error
-      </span>
-    );
-  }
-
-  if (safety.allowed === false) {
-    return (
-      <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium bg-red-500/20 text-red-400 border border-red-500/30 animate-pulse">
-        <Lock size={12} />
-        Blocked (Severity: {safety.max_severity})
-      </span>
-    );
-  }
-
-  return (
-    <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-      <ShieldCheck size={12} />
-      Safe (Max: {safety.max_severity || 0})
-    </span>
-  );
-};
-
-// Helper function to normalize Content Safety categories
-// Backend can return either array [{category: "Hate", severity: 2}] or object {Hate: 2}
-const normalizeCategories = (categories) => {
-  if (!categories) return [];
-
-  // If it's an array (Azure format), transform to [{name, severity}]
-  if (Array.isArray(categories)) {
-    return categories.map((item) => ({
-      name: item.category || item.name || "Unknown",
-      severity: typeof item.severity === "number" ? item.severity : 0,
-    }));
-  }
-
-  // If it's an object {Hate: 2}, transform to [{name, severity}]
-  if (typeof categories === "object") {
-    return Object.entries(categories).map(([name, value]) => ({
-      name,
-      severity: typeof value === "number" ? value : value?.severity || 0,
-    }));
-  }
-
-  return [];
-};
-
-// Content Safety Details Component
-const ContentSafetyDetails = ({ safety }) => {
-  if (!safety || safety.enabled === false) return null;
-
-  const categoryList = normalizeCategories(safety.categories);
-
-  return (
-    <div className="mt-3 p-3 bg-slate-900/50 rounded-lg border border-slate-700/50">
-      <div className="flex items-center gap-2 mb-2">
-        <Shield size={14} className="text-cyan-400" />
-        <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-          Content Safety Analysis
-        </span>
-      </div>
-      {categoryList.length > 0 ? (
-        <div className="grid grid-cols-2 gap-2">
-          {categoryList.map((cat, idx) => (
-            <div
-              key={cat.name || idx}
-              className="flex items-center justify-between p-2 bg-slate-800/50 rounded"
-            >
-              <span className="text-xs text-slate-400 capitalize">
-                {String(cat.name).replace(/_/g, " ")}
-              </span>
-              <span
-                className={`text-xs font-mono font-bold ${
-                  cat.severity >= 4
-                    ? "text-red-400"
-                    : cat.severity >= 2
-                    ? "text-amber-400"
-                    : "text-emerald-400"
-                }`}
-              >
-                {cat.severity}
-              </span>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <p className="text-xs text-slate-500">No category data available</p>
-      )}
-    </div>
-  );
-};
-
 // AI Insight Panel Component
 const AIInsightPanel = ({ ai, expanded, onToggle }) => {
   if (!ai) return null;
 
   const isError = ai.ok === false;
   const analysis = ai.analysis || "No analysis available";
-  const contentSafety = ai.content_safety;
 
   return (
     <div
@@ -309,12 +201,11 @@ const AIInsightPanel = ({ ai, expanded, onToggle }) => {
               <Sparkles size={14} className="text-purple-400" />
             </h4>
             <p className="text-xs text-slate-400">
-              Powered by Azure AI Foundry
+              Anomaly Detection Engine
             </p>
           </div>
         </div>
         <div className="flex items-center gap-3">
-          {contentSafety && <ContentSafetyBadge safety={contentSafety} />}
           {expanded ? (
             <ChevronUp size={20} className="text-slate-400" />
           ) : (
@@ -423,9 +314,6 @@ const AIInsightPanel = ({ ai, expanded, onToggle }) => {
             </div>
           )}
 
-          {/* Content Safety Details */}
-          {contentSafety && <ContentSafetyDetails safety={contentSafety} />}
-
           {/* Error Details */}
           {isError && ai.hint && (
             <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
@@ -454,7 +342,6 @@ const AIDrawer = ({ alert, onClose, onViewTransaction }) => {
   const isError = ai?.ok === false;
   const analysis =
     ai?.analysis || "No AI analysis available for this transaction.";
-  const contentSafety = ai?.content_safety;
 
   return (
     <>
@@ -476,7 +363,7 @@ const AIDrawer = ({ alert, onClose, onViewTransaction }) => {
                   <Sparkles size={18} className="text-purple-400" />
                 </h2>
                 <p className="text-sm text-slate-400">
-                  Powered by Azure AI Foundry
+                  Anomaly Detection Engine
                 </p>
               </div>
             </div>
@@ -544,7 +431,6 @@ const AIDrawer = ({ alert, onClose, onViewTransaction }) => {
                 {ai?.error_code || "Analysis Error"}
               </span>
             )}
-            {contentSafety && <ContentSafetyBadge safety={contentSafety} />}
             {ai?.trace_id && (
               <span className="inline-flex items-center gap-2 px-3 py-2 rounded-full text-xs font-mono text-slate-500 bg-slate-800/50 border border-slate-700/50">
                 Trace: {ai.trace_id.slice(0, 12)}...
@@ -566,7 +452,7 @@ const AIDrawer = ({ alert, onClose, onViewTransaction }) => {
                     AI Assistant
                   </span>
                   <span className="text-xs text-slate-500">
-                    Azure AI Foundry
+                    Anomaly Engine
                   </span>
                 </div>
                 <div className="prose prose-invert prose-sm max-w-none">
@@ -669,71 +555,6 @@ const AIDrawer = ({ alert, onClose, onViewTransaction }) => {
                   </div>
                 </div>
               )}
-            </div>
-          )}
-
-          {/* Content Safety Details */}
-          {contentSafety && contentSafety.enabled !== false && (
-            <div className="pro-card p-5">
-              <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-                <Shield size={14} className="text-cyan-400" />
-                Content Safety Analysis
-              </h3>
-
-              <div className="flex items-center gap-3 mb-4">
-                {contentSafety.allowed === false ? (
-                  <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/20 border border-red-500/30">
-                    <Lock size={16} className="text-red-400" />
-                    <span className="text-red-400 font-medium">
-                      Content Blocked
-                    </span>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/20 border border-emerald-500/30">
-                    <Unlock size={16} className="text-emerald-400" />
-                    <span className="text-emerald-400 font-medium">
-                      Content Approved
-                    </span>
-                  </div>
-                )}
-                <span className="text-sm text-slate-500">
-                  Max Severity:{" "}
-                  <span className="font-mono text-white">
-                    {contentSafety.max_severity || 0}
-                  </span>
-                </span>
-              </div>
-
-              {contentSafety.categories &&
-                (Array.isArray(contentSafety.categories)
-                  ? contentSafety.categories.length > 0
-                  : Object.keys(contentSafety.categories).length > 0) && (
-                  <div className="grid grid-cols-2 gap-3">
-                    {normalizeCategories(contentSafety.categories).map(
-                      (cat, idx) => (
-                        <div
-                          key={cat.name || idx}
-                          className="flex items-center justify-between p-3 bg-slate-900/50 rounded-lg"
-                        >
-                          <span className="text-sm text-slate-400 capitalize">
-                            {String(cat.name).replace(/_/g, " ")}
-                          </span>
-                          <span
-                            className={`text-sm font-mono font-bold ${
-                              cat.severity >= 4
-                                ? "text-red-400"
-                                : cat.severity >= 2
-                                ? "text-amber-400"
-                                : "text-emerald-400"
-                            }`}
-                          >
-                            {cat.severity}
-                          </span>
-                        </div>
-                      )
-                    )}
-                  </div>
-                )}
             </div>
           )}
 
@@ -1172,32 +993,10 @@ const SystemHealthWidget = ({ health, uptime }) => {
         </div>
         <div className="flex items-center justify-between">
           <span className="text-slate-400 flex items-center gap-1">
-            <Brain size={12} /> AI Foundry
+            <Cpu size={12} /> Anomaly Engine
           </span>
-          <span
-            className={
-              health?.ai_runtime?.configured
-                ? "text-emerald-400"
-                : "text-amber-400"
-            }
-          >
-            {health?.ai_runtime?.configured ? "● Active" : "● Not Configured"}
-          </span>
-        </div>
-        <div className="flex items-center justify-between">
-          <span className="text-slate-400 flex items-center gap-1">
-            <Shield size={12} /> Content Safety
-          </span>
-          <span
-            className={
-              health?.safety_runtime?.configured
-                ? "text-emerald-400"
-                : "text-amber-400"
-            }
-          >
-            {health?.safety_runtime?.configured
-              ? "● Active"
-              : "● Not Configured"}
+          <span className="text-emerald-400">
+            ● Active
           </span>
         </div>
         <div className="flex items-center justify-between">
@@ -2664,18 +2463,6 @@ const Dashboard = ({ token, logout }) => {
                                     ERR
                                   </span>
                                 )}
-                                {alert.ai.content_safety?.enabled &&
-                                  (alert.ai.content_safety.allowed ? (
-                                    <ShieldCheck
-                                      size={12}
-                                      className="text-emerald-400"
-                                    />
-                                  ) : (
-                                    <ShieldAlert
-                                      size={12}
-                                      className="text-red-400"
-                                    />
-                                  ))}
                               </div>
                             ) : (
                               <span className="text-slate-500 text-xs">—</span>
@@ -2754,7 +2541,7 @@ const Dashboard = ({ token, logout }) => {
                       <Brain className="text-purple-400 w-6 h-6" />
                     </div>
                     <span className="text-xs font-mono text-purple-400 bg-purple-500/10 px-2 py-1 rounded-lg border border-purple-500/30">
-                      AZURE AI
+                      ENGINE
                     </span>
                   </div>
                   <h3 className="text-slate-400 text-sm font-medium mb-1">
@@ -2771,42 +2558,48 @@ const Dashboard = ({ token, logout }) => {
                 <div className="stat-card">
                   <div className="flex items-center justify-between mb-3">
                     <div className="p-3 rounded-xl bg-gradient-to-br from-emerald-500/20 to-teal-500/10">
-                      <ShieldCheck className="text-emerald-400 w-6 h-6" />
+                      <Activity className="text-emerald-400 w-6 h-6" />
                     </div>
                   </div>
                   <h3 className="text-slate-400 text-sm font-medium mb-1">
-                    Safe Content
+                    Anomaly Rate
                   </h3>
                   <p className="text-4xl font-bold text-emerald-400 tracking-tight">
                     {
-                      alerts.filter(
-                        (a) => a.ai?.content_safety?.allowed !== false
-                      ).length
-                    }
+                      alerts.filter((a) => a.ai).length > 0
+                        ? Math.round(
+                            (alerts.filter(
+                              (a) => a.ai?.risk_level === "high" || a.ai?.risk_level === "critical"
+                            ).length /
+                              alerts.filter((a) => a.ai).length) *
+                              100
+                          )
+                        : 0
+                    }%
                   </p>
                   <p className="text-xs text-slate-500 mt-2">
-                    Passed safety checks
+                    High/critical risk ratio
                   </p>
                 </div>
 
                 <div className="stat-card">
                   <div className="flex items-center justify-between mb-3">
                     <div className="p-3 rounded-xl bg-gradient-to-br from-red-500/20 to-orange-500/10">
-                      <ShieldAlert className="text-red-400 w-6 h-6" />
+                      <AlertTriangle className="text-red-400 w-6 h-6" />
                     </div>
                   </div>
                   <h3 className="text-slate-400 text-sm font-medium mb-1">
-                    Blocked
+                    High Risk
                   </h3>
                   <p className="text-4xl font-bold text-red-400 tracking-tight">
                     {
                       alerts.filter(
-                        (a) => a.ai?.content_safety?.allowed === false
+                        (a) => a.ai?.risk_level === "high" || a.ai?.risk_level === "critical"
                       ).length
                     }
                   </p>
                   <p className="text-xs text-slate-500 mt-2">
-                    Failed safety checks
+                    High/critical risk alerts
                   </p>
                 </div>
 
@@ -2903,11 +2696,6 @@ const Dashboard = ({ token, logout }) => {
                                   <span className="px-2 py-0.5 text-[10px] font-medium bg-red-500/20 text-red-400 rounded-full border border-red-500/30">
                                     ERROR
                                   </span>
-                                )}
-                                {alert.ai.content_safety?.enabled && (
-                                  <ContentSafetyBadge
-                                    safety={alert.ai.content_safety}
-                                  />
                                 )}
                               </div>
 
@@ -3120,7 +2908,7 @@ const Dashboard = ({ token, logout }) => {
                                   onClick={() => setAiDrawerAlert(alert)}
                                   className="px-3 py-1 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/20 rounded text-xs transition-colors flex items-center gap-1"
                                 >
-                                  <Brain size={12} /> AI
+                                  <Cpu size={12} /> Analysis
                                 </button>
                               )}
                               {alert.severity === "error" && (
